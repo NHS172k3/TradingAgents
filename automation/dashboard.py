@@ -19,9 +19,15 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+# Streamlit puts this script's directory on sys.path, not the repo root, so
+# `import automation` fails unless launched from the repo root. Self-locate.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 try:  # secrets live in the repo-root .env, same as the runner/notifiers
     from dotenv import load_dotenv, find_dotenv
-    load_dotenv(find_dotenv(usecwd=True))
+    load_dotenv(_REPO_ROOT / ".env")
 except ImportError:
     pass
 

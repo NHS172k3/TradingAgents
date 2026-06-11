@@ -15,6 +15,8 @@ if ($env:TRADINGAGENTS_PYTHON -and (Test-Path $env:TRADINGAGENTS_PYTHON)) {
     $pythonExe = $env:TRADINGAGENTS_PYTHON
 } elseif (Test-Path (Join-Path $repoRoot ".venv\Scripts\python.exe")) {
     $pythonExe = Join-Path $repoRoot ".venv\Scripts\python.exe"
+} elseif (Test-Path (Join-Path $repoRoot "automation\.venv\Scripts\python.exe")) {
+    $pythonExe = Join-Path $repoRoot "automation\.venv\Scripts\python.exe"
 }
 
 if (-not $pythonExe) {
