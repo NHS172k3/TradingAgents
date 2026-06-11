@@ -1,0 +1,29 @@
+# TradingAgents watchlist — edit freely; validated on every run.
+#
+# preset: standard   = all 4 analysts, full debate (~12 LLM calls/ticker)
+#         cost_saver = market+news analysts only, shorter debates
+#                      (~8 calls/ticker — faster, which matters on local models)
+# Model/provider come from .env (TRADINGAGENTS_LLM_PROVIDER etc.), not presets.
+# Per-ticker overrides: preset, asset_type (stock | crypto).
+
+preset: cost_saver
+
+tickers:
+  - symbol: NVDA
+  - symbol: AAPL
+
+# Dates (YYYY-MM-DD) to skip in addition to weekends/US market holidays,
+# e.g. unscheduled market closures.
+skip_dates: []
+
+telegram:
+  enabled: true
+  notify_on_failure: true
+
+email:
+  enabled: true
+  # to: defaults to GMAIL_ADDRESS from .env; set explicitly to override
+
+run:
+  continue_on_error: true
+  max_consecutive_failures: 3

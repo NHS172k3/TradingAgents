@@ -1,0 +1,17 @@
+# Dependencies of the automation/ layer beyond upstream's pyproject.toml
+# (which already provides pandas and requests).
+#
+#   pip install -r automation/requirements.txt
+#
+# pyyaml and python-dotenv are imported directly by this layer; today they
+# arrive transitively via the upstream LLM stack, but are declared here so
+# the layer survives upstream dependency changes.
+
+streamlit>=1.58
+pyyaml>=6.0
+python-dotenv>=1.0
+yfinance>=0.2.0
+langgraph>=0.1.0
+stockstats>=0.4.1
+langgraph-checkpoint-sqlite
+langchain_openai>=0.1.0
