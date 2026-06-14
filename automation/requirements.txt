@@ -8,8 +8,12 @@
 # the layer survives upstream dependency changes.
 
 streamlit>=1.58
+bleach>=6.1.0
+fastapi>=0.115.0
+markdown>=3.7
 pyyaml>=6.0
 python-dotenv>=1.0
+uvicorn[standard]>=0.30.0
 yfinance>=0.2.0
 langgraph>=0.1.0
 stockstats>=0.4.1

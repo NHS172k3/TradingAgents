@@ -1,0 +1,33 @@
+# systemd --user unit that runs a Cloudflare Tunnel to publish the report
+# server (127.0.0.1:8787) on a stable HTTPS hostname.
+#
+# Installed by automation/linux/install.sh, which substitutes
+# __TUNNEL_NAME__ / __CLOUDFLARED_BIN__ and copies this file to
+# ~/.config/systemd/user/.
+#
+# Prerequisites (one-time, outside this repo):
+#   cloudflared tunnel login
+#   cloudflared tunnel create __TUNNEL_NAME__
+#   cloudflared tunnel route dns __TUNNEL_NAME__ <your-hostname>
+#
+# No-DNS fallback (skip the steps above): instead of installing this unit,
+# run a quick tunnel that prints a random *.trycloudflare.com URL:
+#   cloudflared tunnel --url http://127.0.0.1:8787
+#
+# Manage with:
+#   systemctl --user status cloudflared
+#   journalctl --user -u cloudflared -f
+
+[Unit]
+Description=Cloudflare Tunnel for TradingAgents reports
+After=network-online.target tradingagents-bot.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=__CLOUDFLARED_BIN__ tunnel run __TUNNEL_NAME__
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

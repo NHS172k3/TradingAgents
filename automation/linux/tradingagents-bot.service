@@ -1,0 +1,24 @@
+# systemd --user unit for the TradingAgents on-demand bot + report service.
+#
+# Installed by automation/linux/install.sh, which substitutes __REPO_DIR__
+# and __VENV_DIR__ and copies this file to ~/.config/systemd/user/.
+#
+# Manage with:
+#   systemctl --user status tradingagents-bot
+#   journalctl --user -u tradingagents-bot -f
+
+[Unit]
+Description=TradingAgents on-demand bot + report service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__REPO_DIR__
+EnvironmentFile=__REPO_DIR__/.env
+ExecStart=__VENV_DIR__/bin/python -m automation.service
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

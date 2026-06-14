@@ -11,12 +11,15 @@ requires-python = ">=3.10"
 dependencies = [
     "langchain-core>=0.3.81",
     "backtrader>=1.9.78.123",
+    "bleach>=6.1.0",
+    "fastapi>=0.115.0",
     "langchain-anthropic>=0.3.15",
     "langchain-experimental>=0.3.4",
     "langchain-google-genai>=4.0.0",
     "langchain-openai>=0.3.23",
     "langgraph>=0.4.8",
     "langgraph-checkpoint-sqlite>=2.0.0",
+    "markdown>=3.7",
     "pandas>=2.3.0",
     "parsel>=1.10.0",
     "pytz>=2025.2",
@@ -29,6 +32,7 @@ dependencies = [
     "stockstats>=0.6.5",
     "tqdm>=4.67.1",
     "typing-extensions>=4.14.0",
+    "uvicorn[standard]>=0.30.0",
     "yfinance>=1.4.1",
 ]
 
@@ -36,7 +40,7 @@ dependencies = [
 tradingagents = "cli.main:app"
 
 [tool.setuptools.packages.find]
-include = ["tradingagents*", "cli*"]
+include = ["tradingagents*", "cli*", "automation*"]
 
 [tool.setuptools.package-data]
 cli = ["static/*"]

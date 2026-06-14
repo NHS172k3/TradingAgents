@@ -17,13 +17,10 @@ try:
 except ImportError:
     pass
 
-import requests
-
 from automation.runlog import get_logger
+from automation.telegram_api import send_message as _api_send_message
 
 log = get_logger(__name__)
-
-TELEGRAM_MAX_CHARS = 4096
 
 
 def send_message(text: str) -> bool:
@@ -51,73 +48,7 @@ def send_message(text: str) -> bool:
         )
         return False
 
-    # Split text into chunks if needed
-    chunks = _split_message(text, TELEGRAM_MAX_CHARS)
-
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-
-    for chunk in chunks:
-        try:
-            response = requests.post(
-                url,
-                json={"chat_id": chat_id, "text": chunk},
-                timeout=15,
-            )
-            if response.status_code != 200:
-                log.warning(
-                    "Telegram API returned %d: %s",
-                    response.status_code,
-                    response.text[:200],
-                )
-                return False
-            data = response.json()
-            if not data.get("ok"):
-                log.warning("Telegram API returned ok=false: %s", data.get("description"))
-                return False
-        except requests.RequestException as exc:
-            log.warning("Telegram request failed: %s", exc)
-            return False
-
-    return True
-
-
-def _split_message(text: str, max_chars: int) -> list[str]:
-    """Split a message at newline boundaries if it exceeds max_chars.
-
-    Args:
-        text: The message to split.
-        max_chars: Maximum characters per chunk.
-
-    Returns:
-        A list of chunks, each <= max_chars.
-    """
-    if len(text) <= max_chars:
-        return [text]
-
-    chunks = []
-    lines = text.split("\n")
-    current_chunk = ""
-
-    for line in lines:
-        # If a single line exceeds max_chars, it must be sent as-is
-        if len(line) > max_chars:
-            if current_chunk:
-                chunks.append(current_chunk.rstrip("\n"))
-                current_chunk = ""
-            chunks.append(line)
-        elif len(current_chunk) + len(line) + 1 <= max_chars:
-            # Append line with newline
-            current_chunk += line + "\n"
-        else:
-            # Flush current chunk and start a new one
-            if current_chunk:
-                chunks.append(current_chunk.rstrip("\n"))
-            current_chunk = line + "\n"
-
-    if current_chunk:
-        chunks.append(current_chunk.rstrip("\n"))
-
-    return chunks
+    return _api_send_message(text, chat_id, token=token)
 
 
 if __name__ == "__main__":
