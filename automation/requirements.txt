@@ -10,6 +10,11 @@
 # itsdangerous signs report-link tokens (automation/tokens.py) — the
 # de facto standard for exactly this (Flask's own session/reset-link
 # library), avoids hand-rolling HMAC+timestamp parsing.
+#
+# slowapi (+ its own dependency, limits) rate-limits the public report
+# endpoint (web/server.py) and, used directly, the bot's per-user ticker
+# throttle (bot.py) — one shared, tested rate-limit implementation
+# instead of two hand-rolled ones.
 
 streamlit>=1.58
 bleach>=6.1.0
@@ -18,6 +23,8 @@ markdown>=3.7
 pyyaml>=6.0
 python-dotenv>=1.0
 itsdangerous>=2.1.0
+slowapi>=0.1.9
+limits>=3.0
 uvicorn[standard]>=0.30.0
 yfinance>=0.2.0
 langgraph>=0.1.0

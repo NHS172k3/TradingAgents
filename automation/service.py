@@ -36,7 +36,7 @@ def main() -> None:
     job_queue = JobQueue(store, config.report_cache_ttl_seconds)
 
     uvicorn_config = uvicorn.Config(
-        create_app(store),
+        create_app(store, config),
         host=config.web_host,
         port=config.web_port,
         log_level="info",
