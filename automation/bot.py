@@ -30,6 +30,7 @@ from automation.runlog import get_logger
 from automation.runner import RunResult
 from automation.settings import TickerSpec
 from automation.store import Store
+from automation.tokens import report_token_expiry_date, sign_report_token
 
 log = get_logger(__name__)
 
@@ -239,9 +240,13 @@ def _enqueue_symbols(
             break
 
         spec = TickerSpec(symbol=symbol, preset=config.preset, asset_type="stock")
-        job = _build_job(symbol, user_id, chat_id, spec, date, config, store)
+        job = _build_job(symbol, user_id, chat_id, spec, date, config)
         position = job_queue.submit(job)
-        _reply(chat_id, f"📥 {symbol} queued (position {position}). I'll message you when it's done.", config)
+        _reply(
+            chat_id,
+            f"📥 <b>{html.escape(symbol)}</b> queued (position {position}). I'll message you when it's done.",
+            config,
+        )
 
 
 def _handle_cancel(user_id: int, chat_id: str, job_queue: JobQueue, config: ServiceConfig) -> None:
@@ -267,12 +272,16 @@ def _handle_history(text: str, user_id: int, chat_id: str, store: Store, config:
         _reply(chat_id, "You haven't run any analyses yet.", config)
         return
 
-    token = store.get_token(user_id)
     header = f"📚 Your last {len(reports_list)} analyses:"
-    entries = [
-        f"{r.ticker} — {r.date}\n📄 {config.public_base_url}/report/{r.report_id}?token={token}"
-        for r in reports_list
-    ]
+    entries = []
+    for r in reports_list:
+        token = sign_report_token(config.reports_signing_key, user_id, r.report_id)
+        link = f"{config.public_base_url}/report/{r.report_id}?token={token}"
+        entries.append(
+            f"<b>{html.escape(r.ticker)}</b> — {html.escape(r.date)}\n"
+            f'📄 <a href="{html.escape(link)}">Full report</a>\n'
+            f"<i>Link expires {report_token_expiry_date()} (7 days)</i>"
+        )
     _reply(chat_id, header + "\n\n" + "\n\n".join(entries), config)
 
 
@@ -343,30 +352,38 @@ def _handle_watchlist(
 
 
 def _build_job(
-    symbol: str, user_id: int, chat_id: str, spec: TickerSpec, date: str, config: ServiceConfig, store: Store
+    symbol: str, user_id: int, chat_id: str, spec: TickerSpec, date: str, config: ServiceConfig
 ) -> Job:
     def on_start() -> None:
-        telegram_api.send_message(f"⏳ Running {symbol}…", chat_id, token=config.bot_token)
+        telegram_api.send_message(
+            f"⏳ Running {html.escape(symbol)}…", chat_id, token=config.bot_token, parse_mode="HTML"
+        )
 
     def on_complete(result: RunResult, report_id: Optional[str]) -> None:
-        text = _format_result(result, report_id, store.get_token(user_id), config)
-        telegram_api.send_message(text, chat_id, token=config.bot_token)
+        text = _format_result(result, report_id, user_id, config)
+        telegram_api.send_message(text, chat_id, token=config.bot_token, parse_mode="HTML")
 
     return Job(user_id=user_id, chat_id=chat_id, spec=spec, date=date, on_start=on_start, on_complete=on_complete)
 
 
 def _format_result(
-    result: RunResult, report_id: Optional[str], user_token: Optional[str], config: ServiceConfig
+    result: RunResult, report_id: Optional[str], user_id: int, config: ServiceConfig
 ) -> str:
     if not result.ok:
-        return f"⚠️ {result.ticker} failed: {result.error}"
+        return f"⚠️ <b>{html.escape(result.ticker)}</b> failed: {html.escape(str(result.error))}"
 
-    lines = [f"📈 {result.ticker} — {result.rating or 'N/A'} ({result.date})"]
+    lines = [
+        f"📈 <b>{html.escape(result.ticker)}</b> — "
+        f"{html.escape(result.rating or 'N/A')} ({html.escape(result.date)})"
+    ]
     if result.rationale:
-        lines.append(result.rationale)
-    if report_id and user_token:
-        lines.append(f"📄 Full report: {config.public_base_url}/report/{report_id}?token={user_token}")
-    lines.append(f"({result.duration_seconds:.0f}s, preset {result.preset})")
+        lines.append(html.escape(result.rationale))
+    if report_id:
+        token = sign_report_token(config.reports_signing_key, user_id, report_id)
+        link = f"{config.public_base_url}/report/{report_id}?token={token}"
+        lines.append(f'📄 <a href="{html.escape(link)}">Full report</a>')
+        lines.append(f"<i>Link expires {report_token_expiry_date()} (7 days)</i>")
+    lines.append(f"({result.duration_seconds:.0f}s, preset {html.escape(result.preset)})")
     return "\n".join(lines)
 
 
@@ -404,7 +421,9 @@ def _tail_log() -> Optional[str]:
 
 
 def _help_text(config: ServiceConfig) -> str:
-    command_lines = "\n".join(f"/{name} - {desc}" for name, desc in _COMMANDS if name != "status")
+    command_lines = "\n".join(
+        f"/{name} - {desc}" for name, desc in _COMMANDS if name not in ("status", "invite")
+    )
     return (
         "Send me 1-3 stock tickers (e.g. NVDA or NVDA AAPL) and I'll run an "
         "analysis and reply with a summary and a link to the full report.\n\n"
@@ -416,7 +435,7 @@ def _help_text(config: ServiceConfig) -> str:
 
 
 def _reply(chat_id: str, text: str, config: ServiceConfig) -> None:
-    telegram_api.send_message(text, chat_id, token=config.bot_token)
+    telegram_api.send_message(text, chat_id, token=config.bot_token, parse_mode="HTML")
 
 
 if __name__ == "__main__":

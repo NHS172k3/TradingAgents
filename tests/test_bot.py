@@ -160,3 +160,60 @@ def test_start_rejects_an_unknown_code(tmp_path, monkeypatch):
         assert any("isn't valid" in r.lower() for r in replies)
     finally:
         store.close()
+
+
+def test_format_result_escapes_html_and_shows_expiry(tmp_path):
+    from automation.runner import RunResult
+    from automation.tokens import report_token_expiry_date
+
+    config = _config()
+    result = RunResult(
+        ticker="NVDA",
+        date="2026-06-15",
+        preset="cost_saver",
+        rating="Buy",
+        rationale="Strong <fake-tag> momentum & upside",
+        duration_seconds=12.0,
+    )
+
+    text = bot._format_result(result, "report-abc", 123, config)
+
+    assert "<b>NVDA</b>" in text
+    assert "&lt;fake-tag&gt;" in text  # escaped, not rendered as a tag
+    assert "&amp;" in text
+    assert f"expires {report_token_expiry_date()}" in text
+    assert 'href="https://example.invalid/report/report-abc?token=' in text
+
+
+def test_format_result_omits_link_section_when_no_report_id(tmp_path):
+    from automation.runner import RunResult
+
+    config = _config()
+    result = RunResult(
+        ticker="NVDA", date="2026-06-15", preset="cost_saver",
+        rating="Buy", rationale="ok", duration_seconds=1.0,
+    )
+
+    text = bot._format_result(result, None, 123, config)
+
+    assert "Full report" not in text
+    assert "expires" not in text
+
+
+def test_history_reply_includes_a_freshly_signed_link_and_expiry(tmp_path, monkeypatch):
+    fake = _RecordingTelegram()
+    monkeypatch.setattr(bot, "telegram_api", fake)
+    store = _store(tmp_path)
+    store.unlock(123, "alice")
+    config = _config()
+    store.add_report(123, "NVDA", "2026-06-15", "/tmp/r.html")
+    try:
+        bot._handle_history("/history", 123, "chat-1", store, config)
+
+        text, _chat, mode = fake.sent[-1]
+        assert mode == "HTML"
+        assert "<b>NVDA</b>" in text
+        assert "token=" in text
+        assert "expires" in text
+    finally:
+        store.close()
