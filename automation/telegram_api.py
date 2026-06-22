@@ -76,6 +76,43 @@ def send_message(
     return True
 
 
+def set_my_commands(
+    commands: list[tuple[str, str]],
+    *,
+    token: Optional[str] = None,
+) -> bool:
+    """Register the bot's command menu with Telegram (``setMyCommands``).
+
+    ``commands`` is a list of ``(name, description)`` pairs (name without
+    the leading ``/``). Fail-soft like :func:`send_message`: logs and
+    returns False on any error, never raises.
+    """
+    token = token or os.environ.get("TELEGRAM_BOT_TOKEN")
+    if not token:
+        log.warning("setMyCommands skipped: no bot token configured")
+        return False
+
+    url = f"https://api.telegram.org/bot{token}/setMyCommands"
+    payload = {"commands": [{"command": name, "description": desc} for name, desc in commands]}
+
+    try:
+        response = requests.post(url, json=payload, timeout=15)
+        if response.status_code != 200:
+            log.warning(
+                "setMyCommands returned %d: %s", response.status_code, response.text[:200]
+            )
+            return False
+        data = response.json()
+        if not data.get("ok"):
+            log.warning("setMyCommands returned ok=false: %s", data.get("description"))
+            return False
+    except requests.RequestException as exc:
+        log.warning("setMyCommands request failed: %s", exc)
+        return False
+
+    return True
+
+
 def get_updates(
     offset: int,
     timeout: int,

@@ -31,8 +31,23 @@ log = get_logger(__name__)
 POLL_TIMEOUT_SECONDS = 30
 MAX_SYMBOLS_PER_MESSAGE = 3
 LOG_TAIL_LINES = 20
+HISTORY_DEFAULT_LIMIT = 5
+HISTORY_MAX_LIMIT = 10
+WATCHLIST_MAX_SIZE = 10
 
 _SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
+
+# Registered with Telegram via setMyCommands so they show up in the client's
+# "/" menu. /status is admin-only but still listed here per the agreed
+# design — non-admins get a polite refusal if they try it.
+_COMMANDS: list[tuple[str, str]] = [
+    ("start", "Unlock access with an invite code"),
+    ("help", "Show usage instructions"),
+    ("cancel", "Cancel your most recently queued analysis"),
+    ("history", "Show your recent analyses"),
+    ("watchlist", "Manage your personal ticker watchlist"),
+    ("status", "Admin only: queue/usage/log snapshot"),
+]
 
 
 def run_bot(
@@ -47,6 +62,8 @@ def run_bot(
     forever if ``stop_event`` is ``None``. Network errors are logged and
     retried; a single update's failure never aborts the loop.
     """
+    telegram_api.set_my_commands(_COMMANDS, token=config.bot_token)
+
     offset = 0
     while stop_event is None or not stop_event.is_set():
         try:
@@ -82,6 +99,12 @@ def _handle_update(update: dict, config: ServiceConfig, store: Store, job_queue:
         _reply(chat_id, _help_text(config), config)
     elif text == "/status":
         _handle_status(user_id, chat_id, config, store, job_queue)
+    elif text == "/cancel":
+        _handle_cancel(user_id, chat_id, job_queue, config)
+    elif text == "/history" or text.startswith("/history "):
+        _handle_history(text, user_id, chat_id, store, config)
+    elif text == "/watchlist" or text.startswith("/watchlist "):
+        _handle_watchlist(text, user_id, chat_id, config, store, job_queue)
     else:
         _handle_ticker_message(text, user_id, chat_id, config, store, job_queue)
 
@@ -143,6 +166,12 @@ def _handle_ticker_message(
         _reply(chat_id, "I couldn't find a ticker in that message.\n\n" + _help_text(config), config)
         return
 
+    _enqueue_symbols(symbols, user_id, chat_id, config, store, job_queue)
+
+
+def _enqueue_symbols(
+    symbols: list[str], user_id: int, chat_id: str, config: ServiceConfig, store: Store, job_queue: JobQueue
+) -> None:
     date = _default_date()
     for symbol in symbols:
         if not store.check_and_increment_usage(user_id, config.daily_cap):
@@ -157,6 +186,98 @@ def _handle_ticker_message(
         job = _build_job(symbol, user_id, chat_id, spec, date, config, store)
         position = job_queue.submit(job)
         _reply(chat_id, f"📥 {symbol} queued (position {position}). I'll message you when it's done.", config)
+
+
+def _handle_cancel(user_id: int, chat_id: str, job_queue: JobQueue, config: ServiceConfig) -> None:
+    job = job_queue.cancel_last_for_user(user_id)
+    if job:
+        _reply(chat_id, f"❌ Cancelled {job.spec.symbol} (removed from queue).", config)
+    else:
+        _reply(chat_id, "You don't have anything queued to cancel.", config)
+
+
+def _handle_history(text: str, user_id: int, chat_id: str, store: Store, config: ServiceConfig) -> None:
+    if not store.is_allowed(user_id):
+        _reply(chat_id, "You need an invite code first. Send /start <code> to get started.", config)
+        return
+
+    parts = text.split(maxsplit=1)
+    limit = HISTORY_DEFAULT_LIMIT
+    if len(parts) > 1 and parts[1].strip().isdigit():
+        limit = max(1, min(HISTORY_MAX_LIMIT, int(parts[1].strip())))
+
+    reports_list = store.list_reports_for_user(user_id, limit)
+    if not reports_list:
+        _reply(chat_id, "You haven't run any analyses yet.", config)
+        return
+
+    token = store.get_token(user_id)
+    header = f"📚 Your last {len(reports_list)} analyses:"
+    entries = [
+        f"{r.ticker} — {r.date}\n📄 {config.public_base_url}/report/{r.report_id}?token={token}"
+        for r in reports_list
+    ]
+    _reply(chat_id, header + "\n\n" + "\n\n".join(entries), config)
+
+
+def _handle_watchlist(
+    text: str, user_id: int, chat_id: str, config: ServiceConfig, store: Store, job_queue: JobQueue
+) -> None:
+    if not store.is_allowed(user_id):
+        _reply(chat_id, "You need an invite code first. Send /start <code> to get started.", config)
+        return
+
+    parts = text.split()
+    sub = parts[1].lower() if len(parts) > 1 else "list"
+
+    if sub == "list":
+        symbols = store.watchlist_list(user_id)
+        if symbols:
+            _reply(chat_id, "⭐ Your watchlist:\n" + ", ".join(symbols), config)
+        else:
+            _reply(chat_id, "Your watchlist is empty. Add tickers: /watchlist add NVDA", config)
+
+    elif sub == "add":
+        candidates = [c.upper() for c in parts[2:]]
+        valid = [c for c in candidates if _SYMBOL_RE.match(c)]
+        if not valid:
+            _reply(chat_id, "Usage: /watchlist add NVDA [AAPL ...]", config)
+            return
+        added = [s for s in valid if store.watchlist_add(user_id, s, max_size=WATCHLIST_MAX_SIZE)]
+        skipped = [s for s in valid if s not in added]
+        lines = []
+        if added:
+            lines.append(f"✅ Added: {', '.join(added)}")
+        if skipped:
+            lines.append(
+                f"⚠️ Skipped (already saved or watchlist full at {WATCHLIST_MAX_SIZE}): "
+                + ", ".join(skipped)
+            )
+        _reply(chat_id, "\n".join(lines), config)
+
+    elif sub == "remove":
+        candidates = [c.upper() for c in parts[2:]]
+        if not candidates:
+            _reply(chat_id, "Usage: /watchlist remove NVDA", config)
+            return
+        removed = [s for s in candidates if store.watchlist_remove(user_id, s)]
+        missing = [s for s in candidates if s not in removed]
+        lines = []
+        if removed:
+            lines.append(f"🗑️ Removed: {', '.join(removed)}")
+        if missing:
+            lines.append("Not found in your watchlist: " + ", ".join(missing))
+        _reply(chat_id, "\n".join(lines), config)
+
+    elif sub == "run":
+        symbols = store.watchlist_list(user_id)
+        if not symbols:
+            _reply(chat_id, "Your watchlist is empty. Add tickers first: /watchlist add NVDA", config)
+            return
+        _enqueue_symbols(symbols, user_id, chat_id, config, store, job_queue)
+
+    else:
+        _reply(chat_id, "Usage: /watchlist [list|add SYM...|remove SYM...|run]", config)
 
 
 def _build_job(
@@ -221,13 +342,14 @@ def _tail_log() -> Optional[str]:
 
 
 def _help_text(config: ServiceConfig) -> str:
+    command_lines = "\n".join(f"/{name} - {desc}" for name, desc in _COMMANDS if name != "status")
     return (
         "Send me 1-3 stock tickers (e.g. NVDA or NVDA AAPL) and I'll run an "
         "analysis and reply with a summary and a link to the full report.\n\n"
         f"You get {config.daily_cap} analyses per day.\n\n"
         "Commands:\n"
-        "/start <code> - unlock access with an invite code\n"
-        "/help - show this message"
+        f"{command_lines}\n\n"
+        "Watchlist usage: /watchlist [list|add SYM...|remove SYM...|run]"
     )
 
 
@@ -239,5 +361,5 @@ if __name__ == "__main__":
     cfg = ServiceConfig.from_env()
     store = Store(cfg.db_path)
     store.init_db()
-    jobs = JobQueue(store)
+    jobs = JobQueue(store, cfg.report_cache_ttl_seconds)
     run_bot(cfg, store, jobs)

@@ -43,6 +43,25 @@ CREATE TABLE IF NOT EXISTS reports (
     html_path TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS watchlist (
+    user_id INTEGER NOT NULL,
+    symbol TEXT NOT NULL,
+    added_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, symbol)
+);
+
+CREATE TABLE IF NOT EXISTS run_cache (
+    ticker TEXT NOT NULL,
+    date TEXT NOT NULL,
+    preset TEXT NOT NULL,
+    rating TEXT,
+    rationale TEXT,
+    duration_seconds REAL,
+    html_path TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (ticker, date, preset)
+);
 """
 
 
@@ -60,6 +79,18 @@ class Report:
     user_id: int
     ticker: str
     date: str
+    html_path: str
+    created_at: str
+
+
+@dataclass(frozen=True)
+class CachedRun:
+    ticker: str
+    date: str
+    preset: str
+    rating: Optional[str]
+    rationale: str
+    duration_seconds: float
     html_path: str
     created_at: str
 
@@ -183,3 +214,106 @@ class Store:
                 (report_id,),
             ).fetchone()
         return Report(*row) if row else None
+
+    def list_reports_for_user(self, user_id: int, limit: int = 5) -> list[Report]:
+        """Return a user's own reports, most recent first."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT report_id, user_id, ticker, date, html_path, created_at "
+                "FROM reports WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                (user_id, limit),
+            ).fetchall()
+        return [Report(*row) for row in rows]
+
+    # -- personal watchlist -------------------------------------------------
+
+    def watchlist_add(self, user_id: int, symbol: str, *, max_size: int = 10) -> bool:
+        """Add a symbol to a user's watchlist.
+
+        Returns False (no-op) if the symbol is already present or the
+        watchlist is already at ``max_size``; True if it was added.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM watchlist WHERE user_id = ? AND symbol = ?",
+                (user_id, symbol),
+            ).fetchone()
+            if row:
+                return False
+            count = self._conn.execute(
+                "SELECT COUNT(*) FROM watchlist WHERE user_id = ?", (user_id,)
+            ).fetchone()[0]
+            if count >= max_size:
+                return False
+            added_at = _dt.datetime.now().isoformat(timespec="seconds")
+            self._conn.execute(
+                "INSERT INTO watchlist (user_id, symbol, added_at) VALUES (?, ?, ?)",
+                (user_id, symbol, added_at),
+            )
+            self._conn.commit()
+            return True
+
+    def watchlist_remove(self, user_id: int, symbol: str) -> bool:
+        """Remove a symbol from a user's watchlist. Returns whether it existed."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "DELETE FROM watchlist WHERE user_id = ? AND symbol = ?",
+                (user_id, symbol),
+            )
+            self._conn.commit()
+            return cursor.rowcount > 0
+
+    def watchlist_list(self, user_id: int) -> list[str]:
+        """Return a user's watchlist symbols, oldest-added first."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT symbol FROM watchlist WHERE user_id = ? ORDER BY added_at, rowid",
+                (user_id,),
+            ).fetchall()
+        return [row[0] for row in rows]
+
+    # -- run cache ------------------------------------------------------
+
+    def get_cached_run(
+        self, ticker: str, date: str, preset: str, max_age_seconds: int
+    ) -> Optional[CachedRun]:
+        """Return a cached run for (ticker, date, preset) if still fresh.
+
+        ``max_age_seconds <= 0`` disables the cache (always returns None).
+        """
+        if max_age_seconds <= 0:
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT ticker, date, preset, rating, rationale, duration_seconds, "
+                "html_path, created_at FROM run_cache "
+                "WHERE ticker = ? AND date = ? AND preset = ?",
+                (ticker, date, preset),
+            ).fetchone()
+        if not row:
+            return None
+        cached = CachedRun(*row)
+        age = (_dt.datetime.now() - _dt.datetime.fromisoformat(cached.created_at)).total_seconds()
+        if age > max_age_seconds:
+            return None
+        return cached
+
+    def upsert_cached_run(
+        self,
+        ticker: str,
+        date: str,
+        preset: str,
+        rating: Optional[str],
+        rationale: str,
+        duration_seconds: float,
+        html_path: str,
+    ) -> None:
+        created_at = _dt.datetime.now().isoformat(timespec="seconds")
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO run_cache "
+                "(ticker, date, preset, rating, rationale, duration_seconds, html_path, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (ticker, date, preset, rating, rationale, duration_seconds, html_path, created_at),
+            )
+            self._conn.commit()

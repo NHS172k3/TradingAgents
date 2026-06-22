@@ -33,7 +33,7 @@ def main() -> None:
     store = Store(config.db_path)
     store.init_db()
 
-    job_queue = JobQueue(store)
+    job_queue = JobQueue(store, config.report_cache_ttl_seconds)
 
     uvicorn_config = uvicorn.Config(
         create_app(store),

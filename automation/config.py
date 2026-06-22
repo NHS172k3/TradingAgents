@@ -26,6 +26,7 @@ DEFAULT_PRESET = "cost_saver"
 DEFAULT_WEB_HOST = "127.0.0.1"
 DEFAULT_WEB_PORT = 8787
 DEFAULT_DB_PATH = settings.LOGS_DIR / "service.db"
+DEFAULT_REPORT_CACHE_TTL_SECONDS = 7200
 
 
 class ConfigError(ValueError):
@@ -45,6 +46,7 @@ class ServiceConfig:
     web_port: int = DEFAULT_WEB_PORT
     db_path: Path = DEFAULT_DB_PATH
     admin_user_id: Optional[int] = None
+    report_cache_ttl_seconds: int = DEFAULT_REPORT_CACHE_TTL_SECONDS
 
     @staticmethod
     def from_env() -> "ServiceConfig":
@@ -103,6 +105,12 @@ class ServiceConfig:
         if not web_host:
             web_host = DEFAULT_WEB_HOST
 
+        report_cache_ttl_seconds = _parse_int(
+            "REPORT_CACHE_TTL_SECONDS", DEFAULT_REPORT_CACHE_TTL_SECONDS
+        )
+        if report_cache_ttl_seconds < 0:
+            raise ConfigError("REPORT_CACHE_TTL_SECONDS must be >= 0")
+
         return ServiceConfig(
             bot_token=bot_token,
             invite_code=invite_code,
@@ -113,6 +121,7 @@ class ServiceConfig:
             web_port=web_port,
             db_path=db_path,
             admin_user_id=admin_user_id,
+            report_cache_ttl_seconds=report_cache_ttl_seconds,
         )
 
 
