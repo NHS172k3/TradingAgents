@@ -17,6 +17,7 @@ import threading
 import time
 from typing import Optional
 
+from limits import RateLimitItemPerSecond
 from limits.storage import MemoryStorage
 from limits.strategies import FixedWindowRateLimiter
 
@@ -40,6 +41,8 @@ WATCHLIST_MAX_SIZE = 10
 
 _SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
 
+ANALYSIS_RATE_LIMIT = RateLimitItemPerSecond(1, 10)  # 1 submission per 10s per user
+
 # Registered with Telegram via setMyCommands so they show up in the client's
 # "/" menu. /status is admin-only but still listed here per the agreed
 # design — non-admins get a polite refusal if they try it.
@@ -57,6 +60,7 @@ def run_bot(
     config: ServiceConfig,
     store: Store,
     job_queue: JobQueue,
+    rate_limiter,
     stop_event: Optional[threading.Event] = None,
 ) -> None:
     """Long-poll Telegram and dispatch incoming messages.
@@ -81,12 +85,14 @@ def run_bot(
         for update in updates:
             offset = update["update_id"] + 1
             try:
-                _handle_update(update, config, store, job_queue)
+                _handle_update(update, config, store, job_queue, rate_limiter)
             except Exception:
                 log.exception("Failed to handle update %s", update.get("update_id"))
 
 
-def _handle_update(update: dict, config: ServiceConfig, store: Store, job_queue: JobQueue) -> None:
+def _handle_update(
+    update: dict, config: ServiceConfig, store: Store, job_queue: JobQueue, rate_limiter
+) -> None:
     message = update.get("message")
     if not message or "text" not in message:
         return
@@ -107,9 +113,9 @@ def _handle_update(update: dict, config: ServiceConfig, store: Store, job_queue:
     elif text == "/history" or text.startswith("/history "):
         _handle_history(text, user_id, chat_id, store, config)
     elif text == "/watchlist" or text.startswith("/watchlist "):
-        _handle_watchlist(text, user_id, chat_id, config, store, job_queue)
+        _handle_watchlist(text, user_id, chat_id, config, store, job_queue, rate_limiter)
     else:
-        _handle_ticker_message(text, user_id, chat_id, config, store, job_queue)
+        _handle_ticker_message(text, user_id, chat_id, config, store, job_queue, rate_limiter)
 
 
 def _handle_start(
@@ -158,7 +164,13 @@ def _handle_status(user_id: int, chat_id: str, config: ServiceConfig, store: Sto
 
 
 def _handle_ticker_message(
-    text: str, user_id: int, chat_id: str, config: ServiceConfig, store: Store, job_queue: JobQueue
+    text: str,
+    user_id: int,
+    chat_id: str,
+    config: ServiceConfig,
+    store: Store,
+    job_queue: JobQueue,
+    rate_limiter,
 ) -> None:
     if not store.is_allowed(user_id):
         _reply(chat_id, "You need an invite code first. Send /start <code> to get started.", config)
@@ -169,12 +181,22 @@ def _handle_ticker_message(
         _reply(chat_id, "I couldn't find a ticker in that message.\n\n" + _help_text(config), config)
         return
 
-    _enqueue_symbols(symbols, user_id, chat_id, config, store, job_queue)
+    _enqueue_symbols(symbols, user_id, chat_id, config, store, job_queue, rate_limiter)
 
 
 def _enqueue_symbols(
-    symbols: list[str], user_id: int, chat_id: str, config: ServiceConfig, store: Store, job_queue: JobQueue
+    symbols: list[str],
+    user_id: int,
+    chat_id: str,
+    config: ServiceConfig,
+    store: Store,
+    job_queue: JobQueue,
+    rate_limiter,
 ) -> None:
+    if not rate_limiter.hit(ANALYSIS_RATE_LIMIT, str(user_id)):
+        _reply(chat_id, "⏳ Please wait a few seconds between requests.", config)
+        return
+
     date = _default_date()
     for symbol in symbols:
         if not store.check_and_increment_usage(user_id, config.daily_cap):
@@ -224,7 +246,13 @@ def _handle_history(text: str, user_id: int, chat_id: str, store: Store, config:
 
 
 def _handle_watchlist(
-    text: str, user_id: int, chat_id: str, config: ServiceConfig, store: Store, job_queue: JobQueue
+    text: str,
+    user_id: int,
+    chat_id: str,
+    config: ServiceConfig,
+    store: Store,
+    job_queue: JobQueue,
+    rate_limiter,
 ) -> None:
     if not store.is_allowed(user_id):
         _reply(chat_id, "You need an invite code first. Send /start <code> to get started.", config)
@@ -277,7 +305,7 @@ def _handle_watchlist(
         if not symbols:
             _reply(chat_id, "Your watchlist is empty. Add tickers first: /watchlist add NVDA", config)
             return
-        _enqueue_symbols(symbols, user_id, chat_id, config, store, job_queue)
+        _enqueue_symbols(symbols, user_id, chat_id, config, store, job_queue, rate_limiter)
 
     else:
         _reply(chat_id, "Usage: /watchlist [list|add SYM...|remove SYM...|run]", config)
