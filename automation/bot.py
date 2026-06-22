@@ -165,7 +165,7 @@ def _handle_status(user_id: int, chat_id: str, config: ServiceConfig, store: Sto
 
     log_tail = _tail_log()
     if log_tail:
-        lines.append("Recent log:\n" + log_tail)
+        lines.append("Recent log:\n" + html.escape(log_tail))
 
     _reply(chat_id, "\n".join(lines), config)
 
@@ -252,7 +252,7 @@ def _enqueue_symbols(
 def _handle_cancel(user_id: int, chat_id: str, job_queue: JobQueue, config: ServiceConfig) -> None:
     job = job_queue.cancel_last_for_user(user_id)
     if job:
-        _reply(chat_id, f"❌ Cancelled {job.spec.symbol} (removed from queue).", config)
+        _reply(chat_id, f"❌ Cancelled {html.escape(job.spec.symbol)} (removed from queue).", config)
     else:
         _reply(chat_id, "You don't have anything queued to cancel.", config)
 
@@ -335,9 +335,9 @@ def _handle_watchlist(
         missing = [s for s in candidates if s not in removed]
         lines = []
         if removed:
-            lines.append(f"🗑️ Removed: {', '.join(removed)}")
+            lines.append(f"🗑️ Removed: {html.escape(', '.join(removed))}")
         if missing:
-            lines.append("Not found in your watchlist: " + ", ".join(missing))
+            lines.append("Not found in your watchlist: " + html.escape(", ".join(missing)))
         _reply(chat_id, "\n".join(lines), config)
 
     elif sub == "run":
