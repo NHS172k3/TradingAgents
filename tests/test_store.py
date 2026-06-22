@@ -21,12 +21,10 @@ def test_unlock_is_idempotent_and_allows_user(tmp_path):
     store = Store(tmp_path / "service.db")
     store.init_db()
     try:
-        first_token = store.unlock(123, "alice")
-        second_token = store.unlock(123, "alice-renamed")
+        store.unlock(123, "alice")
+        store.unlock(123, "alice-renamed")  # idempotent: no error, no duplicate row
 
-        assert first_token == second_token
         assert store.is_allowed(123)
-        assert store.get_token(123) == first_token
         assert not store.is_allowed(456)
     finally:
         store.close()

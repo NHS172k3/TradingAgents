@@ -134,30 +134,22 @@ class Store:
             ).fetchone()
         return row is not None
 
-    def unlock(self, user_id: int, telegram_name: str) -> str:
-        """Add user_id to the allowlist (idempotent) and return their token."""
+    def unlock(self, user_id: int, telegram_name: str) -> None:
+        """Add user_id to the allowlist (idempotent)."""
         with self._lock:
             row = self._conn.execute(
-                "SELECT access_token FROM users WHERE user_id = ?", (user_id,)
+                "SELECT 1 FROM users WHERE user_id = ?", (user_id,)
             ).fetchone()
             if row:
-                return row[0]
-            token = secrets.token_urlsafe(TOKEN_BYTES)
+                return
+            placeholder_token = secrets.token_urlsafe(TOKEN_BYTES)
             created_at = _dt.datetime.now().isoformat(timespec="seconds")
             self._conn.execute(
                 "INSERT INTO users (user_id, access_token, telegram_name, created_at) "
                 "VALUES (?, ?, ?, ?)",
-                (user_id, token, telegram_name, created_at),
+                (user_id, placeholder_token, telegram_name, created_at),
             )
             self._conn.commit()
-            return token
-
-    def get_token(self, user_id: int) -> Optional[str]:
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT access_token FROM users WHERE user_id = ?", (user_id,)
-            ).fetchone()
-        return row[0] if row else None
 
     # -- daily usage cap ------------------------------------------------
 
