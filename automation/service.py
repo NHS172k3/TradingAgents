@@ -14,6 +14,8 @@ from types import FrameType
 from typing import Optional
 
 import uvicorn
+from limits.storage import MemoryStorage
+from limits.strategies import FixedWindowRateLimiter
 
 from automation.bot import run_bot
 from automation.config import ServiceConfig
@@ -34,6 +36,7 @@ def main() -> None:
     store.init_db()
 
     job_queue = JobQueue(store, config.report_cache_ttl_seconds)
+    rate_limiter = FixedWindowRateLimiter(MemoryStorage())
 
     uvicorn_config = uvicorn.Config(
         create_app(store, config),
@@ -57,7 +60,7 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _handle_signal)
 
     log.info("Bot starting (preset=%s, daily_cap=%s)", config.preset, config.daily_cap)
-    run_bot(config, store, job_queue, stop_event=stop_event)
+    run_bot(config, store, job_queue, rate_limiter, stop_event=stop_event)
 
     web_server.should_exit = True
     web_thread.join(timeout=WEB_SHUTDOWN_TIMEOUT_SECONDS)

@@ -17,6 +17,9 @@ import threading
 import time
 from typing import Optional
 
+from limits.storage import MemoryStorage
+from limits.strategies import FixedWindowRateLimiter
+
 from automation import settings, telegram_api
 from automation.calendar_check import is_trading_day
 from automation.config import ServiceConfig
@@ -362,4 +365,5 @@ if __name__ == "__main__":
     store = Store(cfg.db_path)
     store.init_db()
     jobs = JobQueue(store, cfg.report_cache_ttl_seconds)
-    run_bot(cfg, store, jobs)
+    rate_limiter = FixedWindowRateLimiter(MemoryStorage())
+    run_bot(cfg, store, jobs, rate_limiter)
