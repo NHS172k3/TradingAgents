@@ -20,6 +20,7 @@ from typing import Optional
 
 TOKEN_BYTES = 16
 REPORT_ID_BYTES = 8
+INVITE_CODE_BYTES = 8
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -62,6 +63,14 @@ CREATE TABLE IF NOT EXISTS run_cache (
     html_path TEXT NOT NULL,
     created_at TEXT NOT NULL,
     PRIMARY KEY (ticker, date, preset)
+);
+
+CREATE TABLE IF NOT EXISTS invites (
+    code TEXT PRIMARY KEY,
+    max_uses INTEGER NOT NULL,
+    uses INTEGER NOT NULL DEFAULT 0,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
 );
 """
 
@@ -319,3 +328,45 @@ class Store:
                 (ticker, date, preset, rating, rationale, duration_seconds, html_path, created_at),
             )
             self._conn.commit()
+
+    # -- invites ----------------------------------------------------------
+
+    def create_invite(self, max_uses: int, ttl_hours: int) -> tuple[str, str]:
+        """Generate and store a new invite code. Returns (code, expires_at)."""
+        code = secrets.token_urlsafe(INVITE_CODE_BYTES)
+        created_at = _dt.datetime.now().isoformat(timespec="seconds")
+        expires_at = (
+            _dt.datetime.now() + _dt.timedelta(hours=ttl_hours)
+        ).isoformat(timespec="seconds")
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO invites (code, max_uses, uses, expires_at, created_at) "
+                "VALUES (?, ?, 0, ?, ?)",
+                (code, max_uses, expires_at, created_at),
+            )
+            self._conn.commit()
+        return code, expires_at
+
+    def consume_invite(self, code: str) -> bool:
+        """Atomically validate and consume one use of an invite code.
+
+        Returns True (and increments ``uses``) if the code exists, has not
+        expired, and has remaining uses; returns False otherwise.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT max_uses, uses, expires_at FROM invites WHERE code = ?",
+                (code,),
+            ).fetchone()
+            if not row:
+                return False
+            max_uses, uses, expires_at = row
+            if uses >= max_uses:
+                return False
+            if _dt.datetime.now() > _dt.datetime.fromisoformat(expires_at):
+                return False
+            self._conn.execute(
+                "UPDATE invites SET uses = uses + 1 WHERE code = ?", (code,)
+            )
+            self._conn.commit()
+            return True

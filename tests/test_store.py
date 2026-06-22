@@ -129,3 +129,53 @@ def test_run_cache_hits_within_ttl_and_misses_after_expiry(tmp_path):
         assert store2.get_cached_run("NVDA", "2026-06-15", "cost_saver", max_age_seconds=3600) is None
     finally:
         store2.close()
+
+
+def test_create_invite_and_consume_invite_within_limits(tmp_path):
+    store = Store(tmp_path / "service.db")
+    store.init_db()
+    try:
+        code, expires_at = store.create_invite(max_uses=2, ttl_hours=24)
+
+        assert len(code) > 0
+        assert expires_at  # an ISO timestamp string
+        assert store.consume_invite(code)
+        assert store.consume_invite(code)  # second of 2 allowed uses
+        assert not store.consume_invite(code)  # third use exceeds max_uses
+    finally:
+        store.close()
+
+
+def test_consume_invite_rejects_unknown_code(tmp_path):
+    store = Store(tmp_path / "service.db")
+    store.init_db()
+    try:
+        assert not store.consume_invite("not-a-real-code")
+    finally:
+        store.close()
+
+
+def test_consume_invite_rejects_expired_code(tmp_path):
+    import datetime as _dt
+    import sqlite3
+
+    store = Store(tmp_path / "service.db")
+    store.init_db()
+    try:
+        code, _ = store.create_invite(max_uses=1, ttl_hours=1)
+    finally:
+        store.close()
+
+    # Backdate the expiry via a separate connection, after closing the store's.
+    db_path = tmp_path / "service.db"
+    conn = sqlite3.connect(str(db_path))
+    past = (_dt.datetime.now() - _dt.timedelta(hours=1)).isoformat(timespec="seconds")
+    conn.execute("UPDATE invites SET expires_at = ? WHERE code = ?", (past, code))
+    conn.commit()
+    conn.close()
+
+    store2 = Store(db_path)
+    try:
+        assert not store2.consume_invite(code)
+    finally:
+        store2.close()
