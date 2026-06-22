@@ -3,6 +3,12 @@
 Complete from-scratch setup. Assumes nothing but Windows 10/11 and an
 NVIDIA GPU (8 GB+ VRAM) if you want local models.
 
+> **On Linux?** The PowerShell commands below have direct equivalents; the
+> Linux-specific differences (venv package, Ollama as a root systemd service,
+> setting `OLLAMA_CONTEXT_LENGTH` via a systemd drop-in) are called out in
+> **[Linux notes](#linux-notes)** at the bottom. For the unattended shared
+> bot service, see `automation/README.md` → "Run as a shared service (Linux)".
+
 ## 1. Clone
 
 ```powershell
@@ -112,3 +118,72 @@ streamlit run automation/dashboard.py
 The **Workflow** page shows live setup status (secrets present, Ollama
 reachable, scheduled tasks registered) — if everything there is ✅, the
 machine is fully set up. Day-to-day usage is documented on that page.
+
+## Linux notes
+
+The steps above are written for Windows. On Linux (verified on Ubuntu 24.04,
+Python 3.12, NVIDIA RTX 2000 Ada / 8 GB) the differences are:
+
+**Step 2 — Python environment.** Debian/Ubuntu's system Python ships without
+the `venv` bootstrap, so `python3 -m venv .venv` fails with an
+`ensurepip is not available` error. Two options:
+
+```bash
+# Option A — install the venv package (needs sudo), then the standard flow:
+sudo apt-get install -y python3.12-venv
+python3 -m venv .venv
+.venv/bin/pip install -e .
+.venv/bin/pip install -r automation/requirements.txt
+
+# Option B — use uv (no sudo; the repo already ships a uv.lock):
+uv venv .venv --python 3.12
+VIRTUAL_ENV=.venv uv pip install -e .
+VIRTUAL_ENV=.venv uv pip install -r automation/requirements.txt
+```
+
+Prefix later commands with the venv, e.g.
+`.venv/bin/python -m automation.run_watchlist --dry-run`.
+
+**Step 3 — Ollama + context length.** Install from
+https://ollama.com/download/linux (`curl -fsSL https://ollama.com/install.sh | sh`),
+which registers Ollama as a **root** systemd service (`ollama.service`) and
+keeps it running. Pull the model with `ollama pull qwen3:8b`.
+
+Because the server runs as root, `OLLAMA_CONTEXT_LENGTH` cannot be set as a
+plain user env var — it must go into the service environment via a systemd
+drop-in (needs sudo):
+
+```bash
+sudo mkdir -p /etc/systemd/system/ollama.service.d
+sudo tee /etc/systemd/system/ollama.service.d/override.conf >/dev/null <<'EOF'
+[Service]
+Environment="OLLAMA_CONTEXT_LENGTH=16384"
+EOF
+sudo systemctl daemon-reload
+sudo systemctl restart ollama
+```
+
+Verify it took effect — load the model and check the `CONTEXT` column:
+
+```bash
+ollama run qwen3:8b "hi" >/dev/null && ollama ps   # CONTEXT should read 16384
+```
+
+**VRAM fit (8 GB).** At the default 4k context qwen3:8b loads fully on GPU
+(~5.6 GB). At 16k context the KV cache grows and the total approaches the 8 GB
+ceiling; with a desktop/Xorg also using VRAM, Ollama may offload a few layers
+to CPU (`ollama ps` shows e.g. `90% GPU / 10% CPU`). That still works, just
+slower — budget toward the upper end of the 5–15 min/ticker range. If it
+offloads heavily, close GPU-using desktop apps or drop
+`OLLAMA_CONTEXT_LENGTH` to `12288`.
+
+**Step 5 — verify.** Same commands, run through the venv:
+
+```bash
+.venv/bin/python -m automation.run_watchlist --dry-run
+.venv/bin/python -m automation.run_watchlist --ticker NVDA --preset cost_saver
+```
+
+**Step 6 — scheduling.** The Windows Task Scheduler script does not apply.
+Use cron or systemd timers, or run the on-demand bot service documented in
+`automation/README.md` → "Run as a shared service (Linux)".

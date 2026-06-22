@@ -84,10 +84,20 @@ from `.env`**, never from presets.
 
 The automation runs on local models via Ollama. Setup:
 
-1. Install Ollama (`winget install Ollama.Ollama`) and pull the model:
-   `ollama pull qwen3:8b` (fits an 8 GB GPU with the 16k context below).
-2. Set the user env var `OLLAMA_CONTEXT_LENGTH=16384` — the default 4096
-   silently truncates this graph's long analyst prompts.
+1. Install Ollama and pull the model: `ollama pull qwen3:8b` (fits an 8 GB GPU
+   with the 16k context below — see the VRAM note in `SETUP.md`).
+   - Windows: `winget install Ollama.Ollama`
+   - Linux: `curl -fsSL https://ollama.com/install.sh | sh` (runs as a root
+     systemd service).
+2. Set the context length to 16384 — the default 4096 silently truncates this
+   graph's long analyst prompts.
+   - Windows: set the user env var `OLLAMA_CONTEXT_LENGTH=16384`, then restart
+     Ollama.
+   - Linux (root systemd service): add it via a drop-in instead —
+     `sudo mkdir -p /etc/systemd/system/ollama.service.d`, write
+     `Environment="OLLAMA_CONTEXT_LENGTH=16384"` under a `[Service]` header into
+     `.../override.conf`, then `sudo systemctl daemon-reload && sudo systemctl
+     restart ollama`. Full commands in `SETUP.md` → "Linux notes".
 3. In the repo-root `.env`:
 
    ```
@@ -115,8 +125,15 @@ laptop with Ollama.
 2. **Python environment** — create a virtualenv and install the project:
 
    ```
-   python -m venv .venv
+   python -m venv .venv          # Debian/Ubuntu: needs `sudo apt-get install python3.12-venv`
    .venv/bin/pip install -e .
+   ```
+
+   No-sudo alternative (the repo ships a `uv.lock`):
+
+   ```
+   uv venv .venv --python 3.12
+   VIRTUAL_ENV=.venv uv pip install -e .
    ```
 
 3. **Secrets** — copy `automation/env.example` into the repo-root `.env` and
