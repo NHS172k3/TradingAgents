@@ -810,6 +810,7 @@ def test_report_route_is_rate_limited_per_client(tmp_path):
         assert statuses[30] == 429
     finally:
         store.close()
+```
 
 - [ ] **Step 3: Run tests to verify they fail**
 
