@@ -10,6 +10,7 @@ composition root.
 from __future__ import annotations
 
 import datetime as _dt
+import os
 import secrets
 import sqlite3
 import threading
@@ -102,6 +103,7 @@ class Store:
         self._db_path = db_path
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        os.chmod(db_path, 0o600)
         self._lock = threading.Lock()
 
     def init_db(self) -> None:
