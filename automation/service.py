@@ -11,9 +11,10 @@ from __future__ import annotations
 import signal
 import threading
 from types import FrameType
-from typing import Optional
 
 import uvicorn
+from limits.storage import MemoryStorage
+from limits.strategies import FixedWindowRateLimiter
 
 from automation.bot import run_bot
 from automation.config import ServiceConfig
@@ -34,9 +35,10 @@ def main() -> None:
     store.init_db()
 
     job_queue = JobQueue(store, config.report_cache_ttl_seconds)
+    rate_limiter = FixedWindowRateLimiter(MemoryStorage())
 
     uvicorn_config = uvicorn.Config(
-        create_app(store),
+        create_app(store, config),
         host=config.web_host,
         port=config.web_port,
         log_level="info",
@@ -48,7 +50,7 @@ def main() -> None:
 
     stop_event = threading.Event()
 
-    def _handle_signal(signum: int, _frame: Optional[FrameType]) -> None:
+    def _handle_signal(signum: int, _frame: FrameType | None) -> None:
         log.info("Received signal %s; shutting down", signum)
         stop_event.set()
         web_server.should_exit = True
@@ -57,7 +59,7 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _handle_signal)
 
     log.info("Bot starting (preset=%s, daily_cap=%s)", config.preset, config.daily_cap)
-    run_bot(config, store, job_queue, stop_event=stop_event)
+    run_bot(config, store, job_queue, rate_limiter, stop_event=stop_event)
 
     web_server.should_exit = True
     web_thread.join(timeout=WEB_SHUTDOWN_TIMEOUT_SECONDS)

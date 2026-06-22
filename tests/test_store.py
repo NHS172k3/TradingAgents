@@ -7,6 +7,16 @@ import sqlite3
 from automation.store import Store
 
 
+def test_db_file_is_created_with_owner_only_permissions(tmp_path):
+    db_path = tmp_path / "service.db"
+    store = Store(db_path)
+    try:
+        mode = db_path.stat().st_mode & 0o777
+        assert mode == 0o600
+    finally:
+        store.close()
+
+
 def test_unlock_is_idempotent_and_allows_user(tmp_path):
     store = Store(tmp_path / "service.db")
     store.init_db()

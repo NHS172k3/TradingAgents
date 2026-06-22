@@ -10,11 +10,10 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 # Load .env from repo root if python-dotenv is available
 try:
-    from dotenv import load_dotenv, find_dotenv
+    from dotenv import find_dotenv, load_dotenv
     load_dotenv(find_dotenv(usecwd=True))
 except ImportError:
     pass
@@ -46,11 +45,11 @@ class ServiceConfig:
     web_host: str = DEFAULT_WEB_HOST
     web_port: int = DEFAULT_WEB_PORT
     db_path: Path = DEFAULT_DB_PATH
-    admin_user_id: Optional[int] = None
+    admin_user_id: int | None = None
     report_cache_ttl_seconds: int = DEFAULT_REPORT_CACHE_TTL_SECONDS
 
     @staticmethod
-    def from_env() -> "ServiceConfig":
+    def from_env() -> ServiceConfig:
         """Build a ServiceConfig from environment variables.
 
         Raises:
@@ -93,14 +92,14 @@ class ServiceConfig:
             raise ConfigError("REPORTS_WEB_PORT must be between 1 and 65535")
 
         admin_raw = os.environ.get("BOT_ADMIN_USER_ID", "").strip()
-        admin_user_id: Optional[int] = None
+        admin_user_id: int | None = None
         if admin_raw:
             try:
                 admin_user_id = int(admin_raw)
             except ValueError:
                 raise ConfigError(
                     f"BOT_ADMIN_USER_ID={admin_raw!r} is not a valid integer"
-                )
+                ) from None
 
         db_path_raw = os.environ.get("BOT_DB_PATH", "").strip()
         db_path = Path(db_path_raw).expanduser() if db_path_raw else DEFAULT_DB_PATH
@@ -137,4 +136,4 @@ def _parse_int(name: str, default: int) -> int:
     try:
         return int(raw)
     except ValueError:
-        raise ConfigError(f"{name}={raw!r} is not a valid integer")
+        raise ConfigError(f"{name}={raw!r} is not a valid integer") from None

@@ -10,15 +10,16 @@ composition root.
 from __future__ import annotations
 
 import datetime as _dt
+import os
 import secrets
 import sqlite3
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 TOKEN_BYTES = 16
 REPORT_ID_BYTES = 8
+INVITE_CODE_BYTES = 8
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -62,6 +63,14 @@ CREATE TABLE IF NOT EXISTS run_cache (
     created_at TEXT NOT NULL,
     PRIMARY KEY (ticker, date, preset)
 );
+
+CREATE TABLE IF NOT EXISTS invites (
+    code TEXT PRIMARY KEY,
+    max_uses INTEGER NOT NULL,
+    uses INTEGER NOT NULL DEFAULT 0,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -88,7 +97,7 @@ class CachedRun:
     ticker: str
     date: str
     preset: str
-    rating: Optional[str]
+    rating: str | None
     rationale: str
     duration_seconds: float
     html_path: str
@@ -102,6 +111,7 @@ class Store:
         self._db_path = db_path
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        os.chmod(db_path, 0o600)
         self._lock = threading.Lock()
 
     def init_db(self) -> None:
@@ -143,7 +153,7 @@ class Store:
     # -- daily usage cap ------------------------------------------------
 
     def check_and_increment_usage(
-        self, user_id: int, cap: int, *, today: Optional[str] = None
+        self, user_id: int, cap: int, *, today: str | None = None
     ) -> bool:
         """Atomically check and increment today's usage counter.
 
@@ -173,7 +183,7 @@ class Store:
             self._conn.commit()
         return True
 
-    def usage_today(self, *, today: Optional[str] = None) -> list[tuple[int, int]]:
+    def usage_today(self, *, today: str | None = None) -> list[tuple[int, int]]:
         """Return ``(user_id, count)`` pairs for everyone with usage today."""
         day = today or _dt.date.today().isoformat()
         with self._lock:
@@ -198,7 +208,7 @@ class Store:
             self._conn.commit()
         return report_id
 
-    def get_report(self, report_id: str) -> Optional[Report]:
+    def get_report(self, report_id: str) -> Report | None:
         with self._lock:
             row = self._conn.execute(
                 "SELECT report_id, user_id, ticker, date, html_path, created_at "
@@ -268,7 +278,7 @@ class Store:
 
     def get_cached_run(
         self, ticker: str, date: str, preset: str, max_age_seconds: int
-    ) -> Optional[CachedRun]:
+    ) -> CachedRun | None:
         """Return a cached run for (ticker, date, preset) if still fresh.
 
         ``max_age_seconds <= 0`` disables the cache (always returns None).
@@ -295,7 +305,7 @@ class Store:
         ticker: str,
         date: str,
         preset: str,
-        rating: Optional[str],
+        rating: str | None,
         rationale: str,
         duration_seconds: float,
         html_path: str,
@@ -309,3 +319,45 @@ class Store:
                 (ticker, date, preset, rating, rationale, duration_seconds, html_path, created_at),
             )
             self._conn.commit()
+
+    # -- invites ----------------------------------------------------------
+
+    def create_invite(self, max_uses: int, ttl_hours: int) -> tuple[str, str]:
+        """Generate and store a new invite code. Returns (code, expires_at)."""
+        code = secrets.token_urlsafe(INVITE_CODE_BYTES)
+        created_at = _dt.datetime.now().isoformat(timespec="seconds")
+        expires_at = (
+            _dt.datetime.now() + _dt.timedelta(hours=ttl_hours)
+        ).isoformat(timespec="seconds")
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO invites (code, max_uses, uses, expires_at, created_at) "
+                "VALUES (?, ?, 0, ?, ?)",
+                (code, max_uses, expires_at, created_at),
+            )
+            self._conn.commit()
+        return code, expires_at
+
+    def consume_invite(self, code: str) -> bool:
+        """Atomically validate and consume one use of an invite code.
+
+        Returns True (and increments ``uses``) if the code exists, has not
+        expired, and has remaining uses; returns False otherwise.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT max_uses, uses, expires_at FROM invites WHERE code = ?",
+                (code,),
+            ).fetchone()
+            if not row:
+                return False
+            max_uses, uses, expires_at = row
+            if uses >= max_uses:
+                return False
+            if _dt.datetime.now() > _dt.datetime.fromisoformat(expires_at):
+                return False
+            self._conn.execute(
+                "UPDATE invites SET uses = uses + 1 WHERE code = ?", (code,)
+            )
+            self._conn.commit()
+            return True

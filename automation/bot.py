@@ -11,11 +11,15 @@ from __future__ import annotations
 
 import datetime as _dt
 import hmac
+import html
 import json
 import re
 import threading
 import time
-from typing import Optional
+
+from limits import RateLimitItemPerSecond
+from limits.storage import MemoryStorage
+from limits.strategies import FixedWindowRateLimiter
 
 from automation import settings, telegram_api
 from automation.calendar_check import is_trading_day
@@ -25,6 +29,7 @@ from automation.runlog import get_logger
 from automation.runner import RunResult
 from automation.settings import TickerSpec
 from automation.store import Store
+from automation.tokens import report_token_expiry_date, sign_report_token
 
 log = get_logger(__name__)
 
@@ -34,8 +39,12 @@ LOG_TAIL_LINES = 20
 HISTORY_DEFAULT_LIMIT = 5
 HISTORY_MAX_LIMIT = 10
 WATCHLIST_MAX_SIZE = 10
+INVITE_DEFAULT_MAX_USES = 1
+INVITE_DEFAULT_TTL_HOURS = 72
 
 _SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
+
+ANALYSIS_RATE_LIMIT = RateLimitItemPerSecond(1, 10)  # 1 submission per 10s per user
 
 # Registered with Telegram via setMyCommands so they show up in the client's
 # "/" menu. /status is admin-only but still listed here per the agreed
@@ -46,6 +55,7 @@ _COMMANDS: list[tuple[str, str]] = [
     ("cancel", "Cancel your most recently queued analysis"),
     ("history", "Show your recent analyses"),
     ("watchlist", "Manage your personal ticker watchlist"),
+    ("invite", "Admin only: generate a new invite code"),
     ("status", "Admin only: queue/usage/log snapshot"),
 ]
 
@@ -54,7 +64,8 @@ def run_bot(
     config: ServiceConfig,
     store: Store,
     job_queue: JobQueue,
-    stop_event: Optional[threading.Event] = None,
+    rate_limiter,
+    stop_event: threading.Event | None = None,
 ) -> None:
     """Long-poll Telegram and dispatch incoming messages.
 
@@ -78,12 +89,14 @@ def run_bot(
         for update in updates:
             offset = update["update_id"] + 1
             try:
-                _handle_update(update, config, store, job_queue)
+                _handle_update(update, config, store, job_queue, rate_limiter)
             except Exception:
                 log.exception("Failed to handle update %s", update.get("update_id"))
 
 
-def _handle_update(update: dict, config: ServiceConfig, store: Store, job_queue: JobQueue) -> None:
+def _handle_update(
+    update: dict, config: ServiceConfig, store: Store, job_queue: JobQueue, rate_limiter
+) -> None:
     message = update.get("message")
     if not message or "text" not in message:
         return
@@ -101,12 +114,14 @@ def _handle_update(update: dict, config: ServiceConfig, store: Store, job_queue:
         _handle_status(user_id, chat_id, config, store, job_queue)
     elif text == "/cancel":
         _handle_cancel(user_id, chat_id, job_queue, config)
+    elif text == "/invite" or text.startswith("/invite "):
+        _handle_invite(text, user_id, chat_id, config, store)
     elif text == "/history" or text.startswith("/history "):
         _handle_history(text, user_id, chat_id, store, config)
     elif text == "/watchlist" or text.startswith("/watchlist "):
-        _handle_watchlist(text, user_id, chat_id, config, store, job_queue)
+        _handle_watchlist(text, user_id, chat_id, config, store, job_queue, rate_limiter)
     else:
-        _handle_ticker_message(text, user_id, chat_id, config, store, job_queue)
+        _handle_ticker_message(text, user_id, chat_id, config, store, job_queue, rate_limiter)
 
 
 def _handle_start(
@@ -119,7 +134,7 @@ def _handle_start(
         _reply(chat_id, _help_text(config), config)
         return
 
-    if hmac.compare_digest(code, config.invite_code):
+    if store.consume_invite(code) or hmac.compare_digest(code, config.invite_code):
         store.unlock(user_id, user_name)
         _reply(
             chat_id,
@@ -145,17 +160,48 @@ def _handle_status(user_id: int, chat_id: str, config: ServiceConfig, store: Sto
 
     last_run = _last_decision()
     if last_run:
-        lines.append(f"Last run: {last_run}")
+        lines.append(f"Last run: {html.escape(last_run)}")
 
     log_tail = _tail_log()
     if log_tail:
-        lines.append("Recent log:\n" + log_tail)
+        lines.append("Recent log:\n" + html.escape(log_tail))
 
     _reply(chat_id, "\n".join(lines), config)
 
 
+def _handle_invite(text: str, user_id: int, chat_id: str, config: ServiceConfig, store: Store) -> None:
+    if config.admin_user_id is None or user_id != config.admin_user_id:
+        _reply(chat_id, "This command is restricted to the service admin.", config)
+        return
+
+    parts = text.split()
+    try:
+        max_uses = int(parts[1]) if len(parts) > 1 else INVITE_DEFAULT_MAX_USES
+        ttl_hours = int(parts[2]) if len(parts) > 2 else INVITE_DEFAULT_TTL_HOURS
+    except ValueError:
+        _reply(chat_id, "Usage: /invite [max_uses] [ttl_hours]", config)
+        return
+    if max_uses < 1 or ttl_hours < 1:
+        _reply(chat_id, "max_uses and ttl_hours must both be at least 1.", config)
+        return
+
+    code, expires_at = store.create_invite(max_uses, ttl_hours)
+    _reply(
+        chat_id,
+        f"🎫 New invite code: <code>{html.escape(code)}</code>\n"
+        f"Max uses: {max_uses} · Expires: {html.escape(expires_at)}",
+        config,
+    )
+
+
 def _handle_ticker_message(
-    text: str, user_id: int, chat_id: str, config: ServiceConfig, store: Store, job_queue: JobQueue
+    text: str,
+    user_id: int,
+    chat_id: str,
+    config: ServiceConfig,
+    store: Store,
+    job_queue: JobQueue,
+    rate_limiter,
 ) -> None:
     if not store.is_allowed(user_id):
         _reply(chat_id, "You need an invite code first. Send /start <code> to get started.", config)
@@ -166,12 +212,22 @@ def _handle_ticker_message(
         _reply(chat_id, "I couldn't find a ticker in that message.\n\n" + _help_text(config), config)
         return
 
-    _enqueue_symbols(symbols, user_id, chat_id, config, store, job_queue)
+    _enqueue_symbols(symbols, user_id, chat_id, config, store, job_queue, rate_limiter)
 
 
 def _enqueue_symbols(
-    symbols: list[str], user_id: int, chat_id: str, config: ServiceConfig, store: Store, job_queue: JobQueue
+    symbols: list[str],
+    user_id: int,
+    chat_id: str,
+    config: ServiceConfig,
+    store: Store,
+    job_queue: JobQueue,
+    rate_limiter,
 ) -> None:
+    if not rate_limiter.hit(ANALYSIS_RATE_LIMIT, str(user_id)):
+        _reply(chat_id, "⏳ Please wait a few seconds between requests.", config)
+        return
+
     date = _default_date()
     for symbol in symbols:
         if not store.check_and_increment_usage(user_id, config.daily_cap):
@@ -183,15 +239,19 @@ def _enqueue_symbols(
             break
 
         spec = TickerSpec(symbol=symbol, preset=config.preset, asset_type="stock")
-        job = _build_job(symbol, user_id, chat_id, spec, date, config, store)
+        job = _build_job(symbol, user_id, chat_id, spec, date, config)
         position = job_queue.submit(job)
-        _reply(chat_id, f"📥 {symbol} queued (position {position}). I'll message you when it's done.", config)
+        _reply(
+            chat_id,
+            f"📥 <b>{html.escape(symbol)}</b> queued (position {position}). I'll message you when it's done.",
+            config,
+        )
 
 
 def _handle_cancel(user_id: int, chat_id: str, job_queue: JobQueue, config: ServiceConfig) -> None:
     job = job_queue.cancel_last_for_user(user_id)
     if job:
-        _reply(chat_id, f"❌ Cancelled {job.spec.symbol} (removed from queue).", config)
+        _reply(chat_id, f"❌ Cancelled {html.escape(job.spec.symbol)} (removed from queue).", config)
     else:
         _reply(chat_id, "You don't have anything queued to cancel.", config)
 
@@ -211,17 +271,27 @@ def _handle_history(text: str, user_id: int, chat_id: str, store: Store, config:
         _reply(chat_id, "You haven't run any analyses yet.", config)
         return
 
-    token = store.get_token(user_id)
     header = f"📚 Your last {len(reports_list)} analyses:"
-    entries = [
-        f"{r.ticker} — {r.date}\n📄 {config.public_base_url}/report/{r.report_id}?token={token}"
-        for r in reports_list
-    ]
+    entries = []
+    for r in reports_list:
+        token = sign_report_token(config.reports_signing_key, user_id, r.report_id)
+        link = f"{config.public_base_url}/report/{r.report_id}?token={token}"
+        entries.append(
+            f"<b>{html.escape(r.ticker)}</b> — {html.escape(r.date)}\n"
+            f'📄 <a href="{html.escape(link)}">Full report</a>\n'
+            f"<i>Link expires {report_token_expiry_date()} (7 days)</i>"
+        )
     _reply(chat_id, header + "\n\n" + "\n\n".join(entries), config)
 
 
 def _handle_watchlist(
-    text: str, user_id: int, chat_id: str, config: ServiceConfig, store: Store, job_queue: JobQueue
+    text: str,
+    user_id: int,
+    chat_id: str,
+    config: ServiceConfig,
+    store: Store,
+    job_queue: JobQueue,
+    rate_limiter,
 ) -> None:
     if not store.is_allowed(user_id):
         _reply(chat_id, "You need an invite code first. Send /start <code> to get started.", config)
@@ -264,9 +334,9 @@ def _handle_watchlist(
         missing = [s for s in candidates if s not in removed]
         lines = []
         if removed:
-            lines.append(f"🗑️ Removed: {', '.join(removed)}")
+            lines.append(f"🗑️ Removed: {html.escape(', '.join(removed))}")
         if missing:
-            lines.append("Not found in your watchlist: " + ", ".join(missing))
+            lines.append("Not found in your watchlist: " + html.escape(", ".join(missing)))
         _reply(chat_id, "\n".join(lines), config)
 
     elif sub == "run":
@@ -274,37 +344,45 @@ def _handle_watchlist(
         if not symbols:
             _reply(chat_id, "Your watchlist is empty. Add tickers first: /watchlist add NVDA", config)
             return
-        _enqueue_symbols(symbols, user_id, chat_id, config, store, job_queue)
+        _enqueue_symbols(symbols, user_id, chat_id, config, store, job_queue, rate_limiter)
 
     else:
         _reply(chat_id, "Usage: /watchlist [list|add SYM...|remove SYM...|run]", config)
 
 
 def _build_job(
-    symbol: str, user_id: int, chat_id: str, spec: TickerSpec, date: str, config: ServiceConfig, store: Store
+    symbol: str, user_id: int, chat_id: str, spec: TickerSpec, date: str, config: ServiceConfig
 ) -> Job:
     def on_start() -> None:
-        telegram_api.send_message(f"⏳ Running {symbol}…", chat_id, token=config.bot_token)
+        telegram_api.send_message(
+            f"⏳ Running {html.escape(symbol)}…", chat_id, token=config.bot_token, parse_mode="HTML"
+        )
 
-    def on_complete(result: RunResult, report_id: Optional[str]) -> None:
-        text = _format_result(result, report_id, store.get_token(user_id), config)
-        telegram_api.send_message(text, chat_id, token=config.bot_token)
+    def on_complete(result: RunResult, report_id: str | None) -> None:
+        text = _format_result(result, report_id, user_id, config)
+        telegram_api.send_message(text, chat_id, token=config.bot_token, parse_mode="HTML")
 
     return Job(user_id=user_id, chat_id=chat_id, spec=spec, date=date, on_start=on_start, on_complete=on_complete)
 
 
 def _format_result(
-    result: RunResult, report_id: Optional[str], user_token: Optional[str], config: ServiceConfig
+    result: RunResult, report_id: str | None, user_id: int, config: ServiceConfig
 ) -> str:
     if not result.ok:
-        return f"⚠️ {result.ticker} failed: {result.error}"
+        return f"⚠️ <b>{html.escape(result.ticker)}</b> failed: {html.escape(str(result.error))}"
 
-    lines = [f"📈 {result.ticker} — {result.rating or 'N/A'} ({result.date})"]
+    lines = [
+        f"📈 <b>{html.escape(result.ticker)}</b> — "
+        f"{html.escape(result.rating or 'N/A')} ({html.escape(result.date)})"
+    ]
     if result.rationale:
-        lines.append(result.rationale)
-    if report_id and user_token:
-        lines.append(f"📄 Full report: {config.public_base_url}/report/{report_id}?token={user_token}")
-    lines.append(f"({result.duration_seconds:.0f}s, preset {result.preset})")
+        lines.append(html.escape(result.rationale))
+    if report_id:
+        token = sign_report_token(config.reports_signing_key, user_id, report_id)
+        link = f"{config.public_base_url}/report/{report_id}?token={token}"
+        lines.append(f'📄 <a href="{html.escape(link)}">Full report</a>')
+        lines.append(f"<i>Link expires {report_token_expiry_date()} (7 days)</i>")
+    lines.append(f"({result.duration_seconds:.0f}s, preset {html.escape(result.preset)})")
     return "\n".join(lines)
 
 
@@ -323,7 +401,7 @@ def _default_date() -> str:
     return date.isoformat()
 
 
-def _last_decision() -> Optional[str]:
+def _last_decision() -> str | None:
     if not settings.DECISIONS_PATH.exists():
         return None
     lines = settings.DECISIONS_PATH.read_text(encoding="utf-8").splitlines()
@@ -333,7 +411,7 @@ def _last_decision() -> Optional[str]:
     return f"{record.get('ticker')} -> {record.get('rating') or 'N/A'} ({record.get('date')}), recorded {record.get('recorded_at')}"
 
 
-def _tail_log() -> Optional[str]:
+def _tail_log() -> str | None:
     log_path = settings.LOGS_DIR / f"run_{_dt.date.today().isoformat()}.log"
     if not log_path.exists():
         return None
@@ -342,7 +420,9 @@ def _tail_log() -> Optional[str]:
 
 
 def _help_text(config: ServiceConfig) -> str:
-    command_lines = "\n".join(f"/{name} - {desc}" for name, desc in _COMMANDS if name != "status")
+    command_lines = "\n".join(
+        f"/{name} - {desc}" for name, desc in _COMMANDS if name not in ("status", "invite")
+    )
     return (
         "Send me 1-3 stock tickers (e.g. NVDA or NVDA AAPL) and I'll run an "
         "analysis and reply with a summary and a link to the full report.\n\n"
@@ -354,7 +434,7 @@ def _help_text(config: ServiceConfig) -> str:
 
 
 def _reply(chat_id: str, text: str, config: ServiceConfig) -> None:
-    telegram_api.send_message(text, chat_id, token=config.bot_token)
+    telegram_api.send_message(text, chat_id, token=config.bot_token, parse_mode="HTML")
 
 
 if __name__ == "__main__":
@@ -362,4 +442,5 @@ if __name__ == "__main__":
     store = Store(cfg.db_path)
     store.init_db()
     jobs = JobQueue(store, cfg.report_cache_ttl_seconds)
-    run_bot(cfg, store, jobs)
+    rate_limiter = FixedWindowRateLimiter(MemoryStorage())
+    run_bot(cfg, store, jobs, rate_limiter)
