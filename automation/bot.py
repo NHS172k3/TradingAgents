@@ -16,7 +16,6 @@ import json
 import re
 import threading
 import time
-from typing import Optional
 
 from limits import RateLimitItemPerSecond
 from limits.storage import MemoryStorage
@@ -66,7 +65,7 @@ def run_bot(
     store: Store,
     job_queue: JobQueue,
     rate_limiter,
-    stop_event: Optional[threading.Event] = None,
+    stop_event: threading.Event | None = None,
 ) -> None:
     """Long-poll Telegram and dispatch incoming messages.
 
@@ -359,7 +358,7 @@ def _build_job(
             f"⏳ Running {html.escape(symbol)}…", chat_id, token=config.bot_token, parse_mode="HTML"
         )
 
-    def on_complete(result: RunResult, report_id: Optional[str]) -> None:
+    def on_complete(result: RunResult, report_id: str | None) -> None:
         text = _format_result(result, report_id, user_id, config)
         telegram_api.send_message(text, chat_id, token=config.bot_token, parse_mode="HTML")
 
@@ -367,7 +366,7 @@ def _build_job(
 
 
 def _format_result(
-    result: RunResult, report_id: Optional[str], user_id: int, config: ServiceConfig
+    result: RunResult, report_id: str | None, user_id: int, config: ServiceConfig
 ) -> str:
     if not result.ok:
         return f"⚠️ <b>{html.escape(result.ticker)}</b> failed: {html.escape(str(result.error))}"
@@ -402,7 +401,7 @@ def _default_date() -> str:
     return date.isoformat()
 
 
-def _last_decision() -> Optional[str]:
+def _last_decision() -> str | None:
     if not settings.DECISIONS_PATH.exists():
         return None
     lines = settings.DECISIONS_PATH.read_text(encoding="utf-8").splitlines()
@@ -412,7 +411,7 @@ def _last_decision() -> Optional[str]:
     return f"{record.get('ticker')} -> {record.get('rating') or 'N/A'} ({record.get('date')}), recorded {record.get('recorded_at')}"
 
 
-def _tail_log() -> Optional[str]:
+def _tail_log() -> str | None:
     log_path = settings.LOGS_DIR / f"run_{_dt.date.today().isoformat()}.log"
     if not log_path.exists():
         return None

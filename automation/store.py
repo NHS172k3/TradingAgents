@@ -16,7 +16,6 @@ import sqlite3
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 TOKEN_BYTES = 16
 REPORT_ID_BYTES = 8
@@ -98,7 +97,7 @@ class CachedRun:
     ticker: str
     date: str
     preset: str
-    rating: Optional[str]
+    rating: str | None
     rationale: str
     duration_seconds: float
     html_path: str
@@ -154,7 +153,7 @@ class Store:
     # -- daily usage cap ------------------------------------------------
 
     def check_and_increment_usage(
-        self, user_id: int, cap: int, *, today: Optional[str] = None
+        self, user_id: int, cap: int, *, today: str | None = None
     ) -> bool:
         """Atomically check and increment today's usage counter.
 
@@ -184,7 +183,7 @@ class Store:
             self._conn.commit()
         return True
 
-    def usage_today(self, *, today: Optional[str] = None) -> list[tuple[int, int]]:
+    def usage_today(self, *, today: str | None = None) -> list[tuple[int, int]]:
         """Return ``(user_id, count)`` pairs for everyone with usage today."""
         day = today or _dt.date.today().isoformat()
         with self._lock:
@@ -209,7 +208,7 @@ class Store:
             self._conn.commit()
         return report_id
 
-    def get_report(self, report_id: str) -> Optional[Report]:
+    def get_report(self, report_id: str) -> Report | None:
         with self._lock:
             row = self._conn.execute(
                 "SELECT report_id, user_id, ticker, date, html_path, created_at "
@@ -279,7 +278,7 @@ class Store:
 
     def get_cached_run(
         self, ticker: str, date: str, preset: str, max_age_seconds: int
-    ) -> Optional[CachedRun]:
+    ) -> CachedRun | None:
         """Return a cached run for (ticker, date, preset) if still fresh.
 
         ``max_age_seconds <= 0`` disables the cache (always returns None).
@@ -306,7 +305,7 @@ class Store:
         ticker: str,
         date: str,
         preset: str,
-        rating: Optional[str],
+        rating: str | None,
         rationale: str,
         duration_seconds: float,
         html_path: str,

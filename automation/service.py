@@ -11,7 +11,6 @@ from __future__ import annotations
 import signal
 import threading
 from types import FrameType
-from typing import Optional
 
 import uvicorn
 from limits.storage import MemoryStorage
@@ -51,7 +50,7 @@ def main() -> None:
 
     stop_event = threading.Event()
 
-    def _handle_signal(signum: int, _frame: Optional[FrameType]) -> None:
+    def _handle_signal(signum: int, _frame: FrameType | None) -> None:
         log.info("Received signal %s; shutting down", signum)
         stop_event.set()
         web_server.should_exit = True
