@@ -87,3 +87,76 @@ def test_throttle_is_scoped_per_user(tmp_path, monkeypatch):
         assert job_queue.qsize() == 2
     finally:
         store.close()
+
+
+def test_invite_command_is_admin_only(tmp_path, monkeypatch):
+    fake = _RecordingTelegram()
+    monkeypatch.setattr(bot, "telegram_api", fake)
+    store = _store(tmp_path)
+    config = _config(admin_user_id=999)
+    try:
+        bot._handle_invite("/invite", 123, "chat-1", config, store)
+
+        replies = [text for text, _chat, _mode in fake.sent]
+        assert any("restricted" in r.lower() for r in replies)
+    finally:
+        store.close()
+
+
+def test_invite_command_generates_a_code_admin_can_share(tmp_path, monkeypatch):
+    fake = _RecordingTelegram()
+    monkeypatch.setattr(bot, "telegram_api", fake)
+    store = _store(tmp_path)
+    config = _config(admin_user_id=999)
+    try:
+        bot._handle_invite("/invite 2 48", 999, "chat-1", config, store)
+
+        replies = [text for text, _chat, _mode in fake.sent]
+        assert len(replies) == 1
+        assert "invite code" in replies[0].lower()
+    finally:
+        store.close()
+
+
+def test_start_unlocks_with_a_db_issued_invite_code(tmp_path, monkeypatch):
+    fake = _RecordingTelegram()
+    monkeypatch.setattr(bot, "telegram_api", fake)
+    store = _store(tmp_path)
+    config = _config()
+    code, _expires_at = store.create_invite(max_uses=1, ttl_hours=1)
+    try:
+        bot._handle_start(f"/start {code}", 123, "alice", "chat-1", config, store)
+
+        assert store.is_allowed(123)
+        replies = [text for text, _chat, _mode in fake.sent]
+        assert any("you're in" in r.lower() for r in replies)
+    finally:
+        store.close()
+
+
+def test_start_still_accepts_the_bootstrap_env_invite_code(tmp_path, monkeypatch):
+    fake = _RecordingTelegram()
+    monkeypatch.setattr(bot, "telegram_api", fake)
+    store = _store(tmp_path)
+    config = _config(invite_code="bootstrap-secret")
+    try:
+        bot._handle_start("/start bootstrap-secret", 999, "owner", "chat-1", config, store)
+
+        assert store.is_allowed(999)
+    finally:
+        store.close()
+
+
+def test_start_rejects_an_unknown_code(tmp_path, monkeypatch):
+    fake = _RecordingTelegram()
+    monkeypatch.setattr(bot, "telegram_api", fake)
+    store = _store(tmp_path)
+    config = _config()
+    try:
+        bot._handle_start("/start nope", 123, "alice", "chat-1", config, store)
+
+        assert not store.is_allowed(123)
+        replies = [text for text, _chat, _mode in fake.sent]
+        assert any("isn't valid" in r.lower() for r in replies)
+    finally:
+        store.close()

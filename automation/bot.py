@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import hmac
+import html
 import json
 import re
 import threading
@@ -38,6 +39,8 @@ LOG_TAIL_LINES = 20
 HISTORY_DEFAULT_LIMIT = 5
 HISTORY_MAX_LIMIT = 10
 WATCHLIST_MAX_SIZE = 10
+INVITE_DEFAULT_MAX_USES = 1
+INVITE_DEFAULT_TTL_HOURS = 72
 
 _SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
 
@@ -52,6 +55,7 @@ _COMMANDS: list[tuple[str, str]] = [
     ("cancel", "Cancel your most recently queued analysis"),
     ("history", "Show your recent analyses"),
     ("watchlist", "Manage your personal ticker watchlist"),
+    ("invite", "Admin only: generate a new invite code"),
     ("status", "Admin only: queue/usage/log snapshot"),
 ]
 
@@ -110,6 +114,8 @@ def _handle_update(
         _handle_status(user_id, chat_id, config, store, job_queue)
     elif text == "/cancel":
         _handle_cancel(user_id, chat_id, job_queue, config)
+    elif text == "/invite" or text.startswith("/invite "):
+        _handle_invite(text, user_id, chat_id, config, store)
     elif text == "/history" or text.startswith("/history "):
         _handle_history(text, user_id, chat_id, store, config)
     elif text == "/watchlist" or text.startswith("/watchlist "):
@@ -128,7 +134,7 @@ def _handle_start(
         _reply(chat_id, _help_text(config), config)
         return
 
-    if hmac.compare_digest(code, config.invite_code):
+    if store.consume_invite(code) or hmac.compare_digest(code, config.invite_code):
         store.unlock(user_id, user_name)
         _reply(
             chat_id,
@@ -161,6 +167,31 @@ def _handle_status(user_id: int, chat_id: str, config: ServiceConfig, store: Sto
         lines.append("Recent log:\n" + log_tail)
 
     _reply(chat_id, "\n".join(lines), config)
+
+
+def _handle_invite(text: str, user_id: int, chat_id: str, config: ServiceConfig, store: Store) -> None:
+    if config.admin_user_id is None or user_id != config.admin_user_id:
+        _reply(chat_id, "This command is restricted to the service admin.", config)
+        return
+
+    parts = text.split()
+    try:
+        max_uses = int(parts[1]) if len(parts) > 1 else INVITE_DEFAULT_MAX_USES
+        ttl_hours = int(parts[2]) if len(parts) > 2 else INVITE_DEFAULT_TTL_HOURS
+    except ValueError:
+        _reply(chat_id, "Usage: /invite [max_uses] [ttl_hours]", config)
+        return
+    if max_uses < 1 or ttl_hours < 1:
+        _reply(chat_id, "max_uses and ttl_hours must both be at least 1.", config)
+        return
+
+    code, expires_at = store.create_invite(max_uses, ttl_hours)
+    _reply(
+        chat_id,
+        f"🎫 New invite code: <code>{html.escape(code)}</code>\n"
+        f"Max uses: {max_uses} · Expires: {html.escape(expires_at)}",
+        config,
+    )
 
 
 def _handle_ticker_message(
