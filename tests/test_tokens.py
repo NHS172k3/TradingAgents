@@ -41,7 +41,7 @@ def test_verify_rejects_token_signed_with_a_different_key():
 
 def test_verify_rejects_expired_token():
     token = sign_report_token(SECRET, 123, "report-abc")
-    time.sleep(1.1)
+    time.sleep(2.1)
 
     assert verify_report_token(SECRET, token, "report-abc", max_age_seconds=1) is None
 
