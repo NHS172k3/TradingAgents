@@ -20,6 +20,7 @@ _SERVICE_ENV_VARS = (
     "TELEGRAM_BOT_TOKEN",
     "TELEGRAM_INVITE_CODE",
     "REPORTS_PUBLIC_BASE_URL",
+    "REPORTS_SIGNING_KEY",
     "BOT_PRESET",
     "BOT_DAILY_CAP",
     "REPORTS_WEB_HOST",
@@ -38,6 +39,7 @@ def _set_required_env(monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
     monkeypatch.setenv("TELEGRAM_INVITE_CODE", "test-invite")
     monkeypatch.setenv("REPORTS_PUBLIC_BASE_URL", "https://example.invalid")
+    monkeypatch.setenv("REPORTS_SIGNING_KEY", "test-signing-key")
 
 
 def test_from_env_parses_defaults_with_only_required_vars_set(monkeypatch):
@@ -52,6 +54,7 @@ def test_from_env_parses_defaults_with_only_required_vars_set(monkeypatch):
     assert config.bot_token == "test-token"
     assert config.invite_code == "test-invite"
     assert config.public_base_url == "https://example.invalid"
+    assert config.reports_signing_key == "test-signing-key"
     assert config.daily_cap == DEFAULT_DAILY_CAP
     assert config.preset == DEFAULT_PRESET
     assert config.web_host == DEFAULT_WEB_HOST
@@ -86,6 +89,7 @@ def test_from_env_raises_config_error_listing_all_missing_required_vars(monkeypa
     assert "TELEGRAM_BOT_TOKEN" in message
     assert "TELEGRAM_INVITE_CODE" in message
     assert "REPORTS_PUBLIC_BASE_URL" in message
+    assert "REPORTS_SIGNING_KEY" in message
 
 
 def test_from_env_raises_config_error_for_unknown_preset(monkeypatch):

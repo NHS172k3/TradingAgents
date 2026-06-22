@@ -40,6 +40,7 @@ class ServiceConfig:
     bot_token: str
     invite_code: str
     public_base_url: str
+    reports_signing_key: str
     daily_cap: int = DEFAULT_DAILY_CAP
     preset: str = DEFAULT_PRESET
     web_host: str = DEFAULT_WEB_HOST
@@ -60,6 +61,7 @@ class ServiceConfig:
         bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
         invite_code = os.environ.get("TELEGRAM_INVITE_CODE", "").strip()
         public_base_url = os.environ.get("REPORTS_PUBLIC_BASE_URL", "").strip()
+        reports_signing_key = os.environ.get("REPORTS_SIGNING_KEY", "").strip()
 
         missing = []
         if not bot_token:
@@ -68,6 +70,8 @@ class ServiceConfig:
             missing.append("TELEGRAM_INVITE_CODE")
         if not public_base_url:
             missing.append("REPORTS_PUBLIC_BASE_URL")
+        if not reports_signing_key:
+            missing.append("REPORTS_SIGNING_KEY")
         if missing:
             raise ConfigError(
                 "Missing required environment variable(s): " + ", ".join(missing)
@@ -115,6 +119,7 @@ class ServiceConfig:
             bot_token=bot_token,
             invite_code=invite_code,
             public_base_url=public_base_url.rstrip("/"),
+            reports_signing_key=reports_signing_key,
             daily_cap=daily_cap,
             preset=preset,
             web_host=web_host,
