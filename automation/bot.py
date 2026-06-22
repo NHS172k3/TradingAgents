@@ -161,7 +161,7 @@ def _handle_status(user_id: int, chat_id: str, config: ServiceConfig, store: Sto
 
     last_run = _last_decision()
     if last_run:
-        lines.append(f"Last run: {last_run}")
+        lines.append(f"Last run: {html.escape(last_run)}")
 
     log_tail = _tail_log()
     if log_tail:
