@@ -17,12 +17,12 @@ from automation.store import Store
 
 
 def _config(**overrides) -> ServiceConfig:
-    defaults = dict(
-        bot_token="test-token",
-        invite_code="test-invite",
-        public_base_url="https://example.invalid",
-        reports_signing_key="test-signing-key",
-    )
+    defaults = {
+        "bot_token": "test-token",
+        "invite_code": "test-invite",
+        "public_base_url": "https://example.invalid",
+        "reports_signing_key": "test-signing-key",
+    }
     defaults.update(overrides)
     return ServiceConfig(**defaults)
 

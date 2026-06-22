@@ -10,7 +10,6 @@ database; rotating the secret key invalidates every outstanding link.
 from __future__ import annotations
 
 import datetime as _dt
-from typing import Optional
 
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
@@ -30,7 +29,7 @@ def verify_report_token(
     report_id: str,
     *,
     max_age_seconds: int = REPORT_TOKEN_MAX_AGE_SECONDS,
-) -> Optional[int]:
+) -> int | None:
     """Return the signed user_id if `token` is valid, unexpired, and matches
     `report_id`; otherwise None. Never raises."""
     serializer = URLSafeTimedSerializer(secret_key, salt=_SALT)

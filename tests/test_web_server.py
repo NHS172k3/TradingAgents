@@ -13,12 +13,12 @@ SIGNING_KEY = "test-signing-key"
 
 
 def _config(**overrides) -> ServiceConfig:
-    defaults = dict(
-        bot_token="test-token",
-        invite_code="test-invite",
-        public_base_url="https://example.invalid",
-        reports_signing_key=SIGNING_KEY,
-    )
+    defaults = {
+        "bot_token": "test-token",
+        "invite_code": "test-invite",
+        "public_base_url": "https://example.invalid",
+        "reports_signing_key": SIGNING_KEY,
+    }
     defaults.update(overrides)
     return ServiceConfig(**defaults)
 
