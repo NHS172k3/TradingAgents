@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 
 from automation.job_queue import Job, JobQueue
@@ -25,7 +26,7 @@ def _make_job(user_id: int, symbol: str) -> Job:
     )
 
 
-def test_cancel_last_for_user_removes_only_that_users_most_recent_queued_job(tmp_path):
+def test_cancel_for_user_removes_only_that_users_most_recent_queued_job_and_refunds_usage(tmp_path):
     store = Store(tmp_path / "service.db")
     store.init_db()
     try:
@@ -49,19 +50,83 @@ def test_cancel_last_for_user_removes_only_that_users_most_recent_queued_job(tmp
         while not block_started:
             time.sleep(0.01)
 
+        store.check_and_increment_usage(123, 5)
+        store.check_and_increment_usage(123, 5)
+        store.check_and_increment_usage(456, 5)
         queue.submit(_make_job(123, "NVDA"))
         queue.submit(_make_job(123, "AAPL"))
         queue.submit(_make_job(456, "TSLA"))
 
-        cancelled = queue.cancel_last_for_user(123)
+        cancelled = queue.cancel_for_user(123)
         assert cancelled is not None
-        assert cancelled.spec.symbol == "AAPL"
+        assert cancelled.symbol == "AAPL"
+        assert cancelled.was_active is False
 
-        assert queue.cancel_last_for_user(789) is None  # nothing queued for this user
+        assert queue.cancel_for_user(789) is None  # nothing queued for this user
 
-        still_queued = queue.cancel_last_for_user(123)
+        still_queued = queue.cancel_for_user(123)
         assert still_queued is not None
-        assert still_queued.spec.symbol == "NVDA"
+        assert still_queued.symbol == "NVDA"
+        assert still_queued.was_active is False
+
+        usage = dict(store.usage_today())
+        assert usage[123] == 0  # both of user 123's queued jobs were cancelled and refunded
+        assert usage[456] == 1  # untouched
+    finally:
+        store.close()
+
+
+def test_cancel_for_user_on_an_active_job_suppresses_the_result_and_refunds_usage(tmp_path, monkeypatch):
+    store = Store(tmp_path / "service.db")
+    store.init_db()
+    try:
+        store.check_and_increment_usage(123, 5)
+
+        def _fake_run_one_ticker(spec, date):
+            time.sleep(0.2)
+            return RunResult(
+                ticker=spec.symbol, date=date, preset=spec.preset,
+                rating="Buy", rationale="ok", duration_seconds=0.2,
+            )
+
+        monkeypatch.setattr("automation.job_queue.run_one_ticker", _fake_run_one_ticker)
+        monkeypatch.setattr("automation.job_queue.append_decision", lambda record: None)
+
+        queue = JobQueue(store, cache_ttl_seconds=0)
+        started = threading.Event()
+        results = []
+        job = Job(
+            user_id=123,
+            chat_id="chat",
+            spec=TickerSpec(symbol="NVDA", preset="cost_saver", asset_type="stock"),
+            date="2026-06-15",
+            on_start=started.set,
+            on_complete=lambda result, report_id: results.append((result, report_id)),
+        )
+        queue.submit(job)
+        assert started.wait(timeout=5)
+
+        cancelled = queue.cancel_for_user(123)
+        assert cancelled is not None
+        assert cancelled.symbol == "NVDA"
+        assert cancelled.was_active is True
+
+        deadline = time.monotonic() + 5
+        while queue.qsize() > 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        assert results == []  # on_complete never called
+        assert dict(store.usage_today())[123] == 0  # refunded
+    finally:
+        store.close()
+
+
+def test_cancel_for_user_with_no_queued_or_active_job_returns_none(tmp_path):
+    store = Store(tmp_path / "service.db")
+    store.init_db()
+    try:
+        queue = JobQueue(store, cache_ttl_seconds=0)
+        assert queue.cancel_for_user(123) is None
     finally:
         store.close()
 

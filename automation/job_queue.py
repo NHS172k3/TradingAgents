@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -33,7 +33,11 @@ class Job:
     up. ``on_complete`` is called with the finished ``RunResult`` and the
     ``report_id`` (``None`` if the run failed or rendering failed). Both
     callbacks are best-effort: exceptions are logged and never stop the
-    worker.
+    worker. ``cancel_requested`` is set by ``JobQueue.cancel_for_user`` when
+    this job is already active (no queue removal is possible at that
+    point) — the worker checks it after the run completes to decide
+    whether to suppress the result and refund usage instead of delivering
+    it normally.
     """
 
     user_id: int
@@ -42,6 +46,15 @@ class Job:
     date: str
     on_start: Callable[[], None]
     on_complete: Callable[[RunResult, Optional[str]], None]
+    cancel_requested: threading.Event = field(default_factory=threading.Event)
+
+
+@dataclass(frozen=True)
+class CancelResult:
+    """Outcome of ``JobQueue.cancel_for_user``."""
+
+    symbol: str
+    was_active: bool
 
 
 class JobQueue:
@@ -71,16 +84,27 @@ class JobQueue:
             active = 1 if self._active_job is not None else 0
             return len(self._jobs) + active
 
-    def cancel_last_for_user(self, user_id: int) -> Optional[Job]:
-        """Remove and return the most recently queued job for ``user_id``.
+    def cancel_for_user(self, user_id: int) -> Optional[CancelResult]:
+        """Cancel the calling user's most recent job, queued or active.
 
-        Only matches jobs still waiting in the queue — a job already picked
-        up by the worker (in progress) is not cancellable.
+        If the job is still waiting in the queue, it is removed outright
+        and its daily-cap usage charge is refunded immediately. If the job
+        is the one currently executing, it cannot be removed or
+        interrupted (there is no interruption point inside the pipeline
+        call) — instead it is flagged so the worker suppresses the result
+        message and refunds usage once the run finishes.
+
+        Returns ``None`` if the user has neither a queued nor an active job.
         """
         with self._lock:
+            if self._active_job is not None and self._active_job.user_id == user_id:
+                self._active_job.cancel_requested.set()
+                return CancelResult(symbol=self._active_job.spec.symbol, was_active=True)
             for i in range(len(self._jobs) - 1, -1, -1):
                 if self._jobs[i].user_id == user_id:
-                    return self._jobs.pop(i)
+                    job = self._jobs.pop(i)
+                    self._store.decrement_usage(job.user_id)
+                    return CancelResult(symbol=job.spec.symbol, was_active=False)
         return None
 
     def _worker(self) -> None:
@@ -113,6 +137,9 @@ class JobQueue:
                 rationale=cached.rationale,
                 duration_seconds=0.0,
             )
+            if job.cancel_requested.is_set():
+                self._finish_cancelled(job, result)
+                return
             report_id: Optional[str] = None
             try:
                 report_id = self._store.add_report(
@@ -127,6 +154,10 @@ class JobQueue:
 
         log.info("Running %s (%s, preset %s)…", job.spec.symbol, job.date, job.spec.preset)
         result = run_one_ticker(job.spec, job.date)
+
+        if job.cancel_requested.is_set():
+            self._finish_cancelled(job, result)
+            return
 
         report_id = None
         if result.ok and result.report_dir:
@@ -155,6 +186,11 @@ class JobQueue:
             log.error("%s failed: %s", result.ticker, result.error)
 
         _safe_call(job.on_complete, result, report_id)
+
+    def _finish_cancelled(self, job: Job, result: RunResult) -> None:
+        """Refund usage and suppress the result for a job cancelled while active."""
+        self._store.decrement_usage(job.user_id)
+        log.info("%s → cancelled by user, suppressing result and refunding usage", result.ticker)
 
 
 def _safe_call(func: Callable, *args) -> None:
