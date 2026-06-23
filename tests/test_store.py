@@ -44,6 +44,25 @@ def test_usage_cap_is_enforced_per_day(tmp_path):
         store.close()
 
 
+def test_decrement_usage_undoes_one_increment_and_floors_at_zero(tmp_path):
+    store = Store(tmp_path / "service.db")
+    store.init_db()
+    try:
+        store.check_and_increment_usage(123, 5, today="2026-06-15")
+        store.check_and_increment_usage(123, 5, today="2026-06-15")
+        store.decrement_usage(123, today="2026-06-15")
+        assert store.usage_today(today="2026-06-15") == [(123, 1)]
+
+        store.decrement_usage(123, today="2026-06-15")
+        store.decrement_usage(123, today="2026-06-15")  # already at 0, stays at 0
+        assert store.usage_today(today="2026-06-15") == [(123, 0)]
+
+        store.decrement_usage(999, today="2026-06-15")  # no row for this user/day: no-op, no error
+        assert store.usage_today(today="2026-06-15") == [(123, 0)]
+    finally:
+        store.close()
+
+
 def test_report_records_round_trip(tmp_path):
     store = Store(tmp_path / "service.db")
     store.init_db()

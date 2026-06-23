@@ -193,6 +193,20 @@ class Store:
             ).fetchall()
         return [(row[0], row[1]) for row in rows]
 
+    def decrement_usage(self, user_id: int, *, today: str | None = None) -> None:
+        """Undo one increment from check_and_increment_usage for today.
+
+        Floors at 0 (never goes negative). No-op if there is no usage row
+        for this (user_id, day) — e.g. nothing was ever charged.
+        """
+        day = today or _dt.date.today().isoformat()
+        with self._lock:
+            self._conn.execute(
+                "UPDATE usage SET count = MAX(count - 1, 0) WHERE user_id = ? AND day = ?",
+                (user_id, day),
+            )
+            self._conn.commit()
+
     # -- reports ----------------------------------------------------------
 
     def add_report(self, user_id: int, ticker: str, date: str, html_path: str) -> str:
