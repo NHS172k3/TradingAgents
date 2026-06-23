@@ -1,10 +1,12 @@
 """Long-poll Telegram bot for on-demand ticker analysis.
 
 Dispatches incoming messages: ``/start <code>`` unlocks the sender via the
-invite code, ``/help`` shows usage, plain-text tickers are queued for
-analysis (subject to the daily cap), and ``/status`` gives the admin a
-queue/usage/log snapshot. Reuses :mod:`automation.job_queue` for execution
-and :mod:`automation.telegram_api` for I/O (including 4096-char chunking).
+invite code, ``/help`` shows usage, ``/run TICKER [TICKER ...]`` queues
+tickers for analysis (subject to the daily cap), and ``/status`` gives the
+admin a queue/usage/log snapshot. Unrecognized text (including bare
+tickers with no command) gets a rejection reply pointing at ``/run``.
+Reuses :mod:`automation.job_queue` for execution and
+:mod:`automation.telegram_api` for I/O (including 4096-char chunking).
 """
 
 from __future__ import annotations
@@ -52,6 +54,7 @@ ANALYSIS_RATE_LIMIT = RateLimitItemPerSecond(1, 10)  # 1 submission per 10s per 
 _COMMANDS: list[tuple[str, str]] = [
     ("start", "Unlock access with an invite code"),
     ("help", "Show usage instructions"),
+    ("run", "Run an analysis for one or more tickers"),
     ("cancel", "Cancel your most recently queued analysis"),
     ("history", "Show your recent analyses"),
     ("watchlist", "Manage your personal ticker watchlist"),
@@ -120,8 +123,14 @@ def _handle_update(
         _handle_history(text, user_id, chat_id, store, config)
     elif text == "/watchlist" or text.startswith("/watchlist "):
         _handle_watchlist(text, user_id, chat_id, config, store, job_queue, rate_limiter)
+    elif text == "/run" or text.startswith("/run "):
+        _handle_run(text, user_id, chat_id, config, store, job_queue, rate_limiter)
     else:
-        _handle_ticker_message(text, user_id, chat_id, config, store, job_queue, rate_limiter)
+        _reply(
+            chat_id,
+            "I only respond to commands. Send /run TICKER to analyze a stock, or /help for the full list.",
+            config,
+        )
 
 
 def _handle_start(
@@ -138,7 +147,7 @@ def _handle_start(
         store.unlock(user_id, user_name)
         _reply(
             chat_id,
-            "✅ You're in! Send a ticker (e.g. NVDA) to run an analysis.\n\n" + _help_text(config),
+            "✅ You're in! Send /run NVDA to run an analysis.\n\n" + _help_text(config),
             config,
         )
     else:
@@ -194,7 +203,7 @@ def _handle_invite(text: str, user_id: int, chat_id: str, config: ServiceConfig,
     )
 
 
-def _handle_ticker_message(
+def _handle_run(
     text: str,
     user_id: int,
     chat_id: str,
@@ -209,7 +218,11 @@ def _handle_ticker_message(
 
     symbols = _parse_symbols(text)
     if not symbols:
-        _reply(chat_id, "I couldn't find a ticker in that message.\n\n" + _help_text(config), config)
+        _reply(
+            chat_id,
+            "I couldn't find a ticker after /run. Usage: /run NVDA [AAPL ...]\n\n" + _help_text(config),
+            config,
+        )
         return
 
     _enqueue_symbols(symbols, user_id, chat_id, config, store, job_queue, rate_limiter)
@@ -249,11 +262,18 @@ def _enqueue_symbols(
 
 
 def _handle_cancel(user_id: int, chat_id: str, job_queue: JobQueue, config: ServiceConfig) -> None:
-    job = job_queue.cancel_last_for_user(user_id)
-    if job:
-        _reply(chat_id, f"❌ Cancelled {html.escape(job.spec.symbol)} (removed from queue).", config)
+    cancelled = job_queue.cancel_for_user(user_id)
+    if cancelled is None:
+        _reply(chat_id, "You have nothing queued to cancel.", config)
+    elif cancelled.was_active:
+        _reply(
+            chat_id,
+            f"⏳ {html.escape(cancelled.symbol)} is already running and can't be killed early, "
+            "but you won't be charged for it and won't get a result message.",
+            config,
+        )
     else:
-        _reply(chat_id, "You don't have anything queued to cancel.", config)
+        _reply(chat_id, f"❌ Cancelled {html.escape(cancelled.symbol)} (removed from queue).", config)
 
 
 def _handle_history(text: str, user_id: int, chat_id: str, store: Store, config: ServiceConfig) -> None:
@@ -424,8 +444,8 @@ def _help_text(config: ServiceConfig) -> str:
         f"/{name} - {desc}" for name, desc in _COMMANDS if name not in ("status", "invite")
     )
     return (
-        "Send me 1-3 stock tickers (e.g. NVDA or NVDA AAPL) and I'll run an "
-        "analysis and reply with a summary and a link to the full report.\n\n"
+        "Send /run TICKER [TICKER ...] (up to 3, e.g. /run NVDA or /run NVDA AAPL) "
+        "and I'll run an analysis and reply with a summary and a link to the full report.\n\n"
         f"You get {config.daily_cap} analyses per day.\n\n"
         "Commands:\n"
         f"{command_lines}\n\n"
